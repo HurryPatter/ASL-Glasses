@@ -3,10 +3,17 @@ class Debouncer:
         self.min_frames = min_frames
         self.current_letter = None
         self.frame_count = 0
-        self.confirmed_string = ""
+        self.frame_no = 0
+        self.commits = []        # list of (letter, frame_no) in order
 
-    def update(self, letter):
+    @property
+    def confirmed_string(self):
+        return "".join(letter for letter, _ in self.commits)
+
+    def update(self, letter, frame_no=None):
         """Feed in the raw CNN prediction each frame. Returns confirmed string."""
+        self.frame_no = self.frame_no + 1 if frame_no is None else frame_no
+
         if letter == self.current_letter:
             self.frame_count += 1
         else:
@@ -14,12 +21,24 @@ class Debouncer:
             self.frame_count = 1
 
         # Only accept a letter once it's been held for min_frames
-        if self.frame_count == self.min_frames:
-            self.confirmed_string += letter
+        if self.frame_count == self.min_frames and letter:
+            self.commits.append((letter, self.frame_no))
 
         return self.confirmed_string
 
+    def commit_motion(self, letter, start_frame):
+        """A motion letter (J/Z) was recognised over frames [start_frame, now].
+
+        Any static letters committed during that span were the CNN misreading
+        the start of the motion (e.g. an 'I' before the J hook), so drop them.
+        """
+        self.commits = [c for c in self.commits if c[1] < start_frame]
+        self.commits.append((letter, self.frame_no))
+        self.current_letter = None
+        self.frame_count = 0
+        return self.confirmed_string
+
     def reset(self):
-        self.confirmed_string = ""
+        self.commits = []
         self.current_letter = None
         self.frame_count = 0
