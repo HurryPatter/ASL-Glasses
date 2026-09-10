@@ -1,14 +1,12 @@
 from symspellpy import SymSpell, Verbosity
-import pkg_resources
+from importlib.resources import files
 
 class NLPBridge:
     def __init__(self, mode="normal"):
         self.sym_spell = SymSpell(max_dictionary_edit_distance=2, prefix_length=7)
 
         # Load the built-in Wikipedia frequency dictionary
-        dictionary_path = pkg_resources.resource_filename(
-            "symspellpy", "frequency_dictionary_en_82_765.txt"
-        )
+        dictionary_path = files("symspellpy") / "frequency_dictionary_en_82_765.txt"
         self.sym_spell.load_dictionary(dictionary_path, term_index=0, count_index=1)
 
         self.mode = mode

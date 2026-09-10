@@ -1,40 +1,47 @@
+"""ASL fingerspelling translator, rule-based edition (branch: trial).
+
+Pipeline per frame:
+  camera -> MediaPipe hand landmarks -> geometric rules (rules.py) -> letter
+         -> Debouncer -> SymSpell word segmentation -> HUD / speech
+J and Z, which need motion, come from the trajectory rules in motion.py.
+No trained letter model is used anywhere.
+"""
+import sys
 import cv2
 import numpy as np
-from keras.models import load_model
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+from rules import classify, FINGERS
 from debouncer import Debouncer
 from motion import MotionDetector
 from nlp_bridge import NLPBridge
 from audio import AudioOutput
 
 # ── Constants ──────────────────────────────────────────────────────────────
-ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-VALID_IDX = [i for i in range(26) if i not in [9, 25]]  # no J or Z
-MODEL_PATH = "asl_model.h5"
 LANDMARKER_PATH = "hand_landmarker.task"
-CONFIDENCE_THRESHOLD = 0.85
-BOX_PADDING = 20  # pixels added around the landmark bounding box
-STILL_THRESHOLD = 0.15  # hand widths moved over 5 frames; above this, static letters are ignored
+MIN_SCORE = 0.85          # fraction of a letter's rule weight that must pass
+MIN_MARGIN = 0.05         # best letter must beat the runner-up by this much
+STILL_THRESHOLD = 0.15    # hand widths moved over 5 frames; above this, static letters are ignored
 MOTION_FLASH_FRAMES = 15  # how long a recognised J/Z stays on the HUD
+CAMERA_INDEX = int(sys.argv[1]) if len(sys.argv) > 1 else 0  # e.g. `main.py 1` when a phone sits at index 0
+
+# Skeleton edges for drawing
+EDGES = [(0, 1), (1, 2), (2, 3), (3, 4)] + [(0, 5), (0, 17), (5, 9), (9, 13), (13, 17)]
+for _f in FINGERS.values():
+    EDGES += [(_f[0], _f[1]), (_f[1], _f[2]), (_f[2], _f[3])]
 
 # ── Load components ────────────────────────────────────────────────────────
-print("Loading CNN model...")
-model = load_model(MODEL_PATH)
-
 print("Loading MediaPipe hand landmarker...")
-base_options = mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH)
-landmarker_options = mp_vision.HandLandmarkerOptions(
-    base_options=base_options,
+landmarker = mp_vision.HandLandmarker.create_from_options(mp_vision.HandLandmarkerOptions(
+    base_options=mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH),
     running_mode=mp_vision.RunningMode.VIDEO,
     num_hands=1,
     min_hand_detection_confidence=0.6,
     min_hand_presence_confidence=0.6,
     min_tracking_confidence=0.6,
-)
-landmarker = mp_vision.HandLandmarker.create_from_options(landmarker_options)
+))
 
 print("Initialising pipeline...")
 debouncer = Debouncer(min_frames=3)
@@ -43,35 +50,33 @@ nlp = NLPBridge(mode="academic")
 audio = AudioOutput()
 
 
-# ── Hand region from MediaPipe landmarks ────────────────────────────────────
-def get_hand_bbox(landmarks, frame_w, frame_h, pad=BOX_PADDING):
-    """Convert normalized MediaPipe landmarks into a padded, SQUARE pixel bbox.
-
-    Forcing a square box (rather than the raw landmark extent) means the
-    later cv2.resize(28, 28) scales evenly instead of squashing the hand
-    into a different aspect ratio than the training images.
-    """
-    xs = [lm.x * frame_w for lm in landmarks]
-    ys = [lm.y * frame_h for lm in landmarks]
-
-    x1, x2 = min(xs) - pad, max(xs) + pad
-    y1, y2 = min(ys) - pad, max(ys) + pad
-
-    box_w, box_h = x2 - x1, y2 - y1
-    side = max(box_w, box_h)
-    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-    x1, x2 = cx - side / 2, cx + side / 2
-    y1, y2 = cy - side / 2, cy + side / 2
-
-    x1 = int(max(0, x1))
-    y1 = int(max(0, y1))
-    x2 = int(min(frame_w, x2))
-    y2 = int(min(frame_h, y2))
-    return x1, y1, x2, y2
+def debug_panel(features, ranked, size=360):
+    """Hand skeleton in the normalised hand frame plus rule readout and top scores."""
+    panel = np.full((size, size + 300, 3), 30, np.uint8)
+    p = features.p
+    scale = size / 4.5
+    cx, cy = size // 2, int(size * 0.8)
+    pix = [(int(cx + x * scale), int(cy - y * scale)) for x, y in p]
+    for a, b in EDGES:
+        cv2.line(panel, pix[a], pix[b], (200, 200, 200), 2)
+    for i, (x, y) in enumerate(pix):
+        cv2.circle(panel, (x, y), 4, (0, 255, 255) if i == 4 else (255, 200, 0), -1)
+    cv2.putText(panel, "hand frame (thumb on right)", (6, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+    x0 = size + 10
+    cv2.putText(panel, "rules", (x0, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
+    for i, line in enumerate(features.readout().split("  ")):
+        cv2.putText(panel, line, (x0, 52 + i * 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
+    cv2.putText(panel, "scores", (x0, 200), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
+    for i, (letter, s) in enumerate(ranked[:5]):
+        color = (0, 255, 0) if i == 0 and s >= MIN_SCORE else (200, 200, 200)
+        cv2.putText(panel, f"{letter}  {s:.2f}", (x0, 228 + i * 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    return panel
 
 
 # ── Camera loop ────────────────────────────────────────────────────────────
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(CAMERA_INDEX)
+if not cap.isOpened():
+    sys.exit(f"Could not open camera index {CAMERA_INDEX}. Try another index: python main.py 1")
 frame_timestamp_ms = 0
 frame_no = 0
 last_motion = ("", -MOTION_FLASH_FRAMES)  # (letter, frame it fired)
@@ -89,55 +94,42 @@ while True:
 
     # ── MediaPipe hand detection ─────────────────────────────────────────
     mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
-                         data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-    frame_timestamp_ms += 33  # approx one frame at ~30fps
+                        data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    frame_timestamp_ms += 33
     frame_no += 1
     result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
 
     predicted_letter = ""
-    confidence = 0.0
+    score = 0.0
     motion_letter, motion_start = "", None
     hand_speed = 0.0
+    ranked = []
 
     if result.hand_landmarks:
         landmarks = result.hand_landmarks[0]
         motion_letter, motion_start = motion.update(landmarks, frame_no)
         hand_speed = motion.speed(5)
-        x1, y1, x2, y2 = get_hand_bbox(landmarks, w, h)
-        hand_crop = frame[y1:y2, x1:x2]
 
-        if hand_crop.size > 0:
-            # ── Preprocess to match CNN training format ────────────────────
-            gray = cv2.cvtColor(hand_crop, cv2.COLOR_BGR2GRAY)
-            resized = cv2.resize(gray, (28, 28))
-            normalized = resized / 255.0
-            input_arr = normalized.reshape(1, 28, 28, 1)
+        # ── Rule-based letter ──────────────────────────────────────────────
+        predicted_letter, score, features, ranked = classify(
+            landmarks, w, h, min_score=MIN_SCORE, min_margin=MIN_MARGIN)
+        if hand_speed > STILL_THRESHOLD:
+            predicted_letter = ""  # mid-motion: don't commit static guesses
+        cv2.imshow("What the rules see", debug_panel(features, ranked))
 
-            # ── CNN prediction ─────────────────────────────────────────────
-            predictions = model.predict(input_arr, verbose=0)
-            pred_idx = np.argmax(predictions)
-            confidence = predictions[0][pred_idx]
-
-            if pred_idx in VALID_IDX and confidence > CONFIDENCE_THRESHOLD:
-                predicted_letter = ALPHABET[pred_idx]
-            if hand_speed > STILL_THRESHOLD:
-                predicted_letter = ""  # mid-motion: don't commit static guesses
-
-        # ── Draw bounding box, landmarks and prediction ─────────────────────
+        # ── Draw skeleton and prediction ───────────────────────────────────
+        pix = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
         color = (0, 255, 0) if predicted_letter else (0, 165, 255)
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-        for lm in landmarks:
-            px, py = int(lm.x * w), int(lm.y * h)
-            cv2.circle(frame, (px, py), 2, (255, 255, 0), -1)
-        if predicted_letter:
-            cv2.putText(frame, f"{predicted_letter} ({confidence:.0%})",
-                        (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                        1.2, color, 2)
-        elif hand_speed > STILL_THRESHOLD:
-            cv2.putText(frame, "moving...", (x1, y1 - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+        for a, b in EDGES:
+            cv2.line(frame, pix[a], pix[b], color, 2)
+        for x, y in pix:
+            cv2.circle(frame, (x, y), 3, (255, 255, 0), -1)
+        xs, ys = zip(*pix)
+        label = f"{predicted_letter} ({score:.0%})" if predicted_letter else \
+                ("moving..." if hand_speed > STILL_THRESHOLD else f"? {ranked[0][0]} {ranked[0][1]:.0%}")
+        cv2.putText(frame, label, (min(xs), min(ys) - 12), cv2.FONT_HERSHEY_SIMPLEX, 1.1, color, 2)
     else:
-        motion.clear()  # hand left the frame; stale trajectory is meaningless
+        motion.clear()
         cv2.putText(frame, "No hand detected", (10, h - 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
@@ -158,8 +150,14 @@ while True:
         cv2.putText(frame, f"Motion: {last_motion[0]}", (w - 220, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
     cv2.putText(frame, "Q=quit R=reset S=speak",
-                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (150, 150, 150), 1)
+                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+
+    if frame_no % 30 == 0:  # once a second: what the pipeline sees
+        if ranked:
+            top = " ".join(f"{l}:{s:.2f}" for l, s in ranked[:3])
+            print(f"[{frame_no}] hand=yes speed={hand_speed:.2f} top3=[{top}] raw='{raw_string}'")
+        else:
+            print(f"[{frame_no}] hand=no raw='{raw_string}'")
 
     cv2.imshow("ASL Translator", frame)
 
