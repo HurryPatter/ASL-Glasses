@@ -2,25 +2,26 @@
 Trains the landmark-based letter classifier on landmark_data.csv
 (produced by collect_data.py).
 
-Input:  landmark_data.csv  -- label + 42 normalized landmark floats per row
-Output: landmark_model.h5  -- trained Keras model
-        landmark_labels.json -- the letter order the model's output
-                                 indices correspond to (index i -> letter)
+Uses scikit-learn instead of TensorFlow/Keras -- a 42-input MLP doesn't
+need a deep learning framework, and this avoids TensorFlow's native DLL
+entirely (which fails to load under some Windows/Python setups, notably
+the Microsoft Store Python distribution).
 
-Run this after collect_data.py, before wiring the model into main.py.
+Input:  landmark_data.csv    -- label + 42 normalized landmark floats per row
+Output: landmark_model.joblib -- trained scikit-learn model
+        landmark_labels.json  -- the letter order the model's output
+                                  indices correspond to (index i -> letter)
 """
 import json
 import numpy as np
 import pandas as pd
+import joblib
 from sklearn.model_selection import train_test_split
+from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import classification_report, confusion_matrix
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Input
-from keras.callbacks import EarlyStopping
-from keras.utils import to_categorical
 
 DATA_PATH = "landmark_data.csv"
-MODEL_OUT = "landmark_model.h5"
+MODEL_OUT = "landmark_model.joblib"
 LABELS_OUT = "landmark_labels.json"
 
 
@@ -38,32 +39,22 @@ def main():
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.15, stratify=y, random_state=42
     )
-    y_train_cat = to_categorical(y_train, num_classes=len(letters))
-    y_val_cat = to_categorical(y_val, num_classes=len(letters))
 
-    model = Sequential([
-        Input(shape=(42,)),
-        Dense(64, activation="relu"),
-        Dropout(0.2),
-        Dense(32, activation="relu"),
-        Dense(len(letters), activation="softmax"),
-    ])
-    model.compile(optimizer="adam", loss="categorical_crossentropy", metrics=["accuracy"])
-    model.summary()
-
-    early_stop = EarlyStopping(monitor="val_accuracy", patience=15, restore_best_weights=True)
-    model.fit(
-        X_train, y_train_cat,
-        validation_data=(X_val, y_val_cat),
-        epochs=150,
-        batch_size=32,
-        callbacks=[early_stop],
-        verbose=2,
+    model = MLPClassifier(
+        hidden_layer_sizes=(64, 32),
+        activation="relu",
+        early_stopping=True,
+        validation_fraction=0.1,
+        n_iter_no_change=15,
+        max_iter=500,
+        random_state=42,
     )
+    model.fit(X_train, y_train)
 
     # ── Evaluation ───────────────────────────────────────────────────────
-    val_pred = np.argmax(model.predict(X_val, verbose=0), axis=1)
-    print("\nPer-letter results:")
+    val_pred = model.predict(X_val)
+    val_acc = (val_pred == y_val).mean()
+    print(f"\nValidation accuracy: {val_acc:.3f}\n")
     print(classification_report(y_val, val_pred, target_names=letters, zero_division=0))
 
     print("Most-confused pairs (true -> predicted, count):")
@@ -77,7 +68,7 @@ def main():
         print(f"  {true_l} -> {pred_l}: {count}")
 
     # ── Save ─────────────────────────────────────────────────────────────
-    model.save(MODEL_OUT)
+    joblib.dump(model, MODEL_OUT)
     with open(LABELS_OUT, "w") as f:
         json.dump(letters, f)
     print(f"\nSaved model to {MODEL_OUT} and label order to {LABELS_OUT}")
