@@ -1,13 +1,6 @@
 class Debouncer:
-    def __init__(self, min_frames=3, repeat_interval=None):
+    def __init__(self, min_frames=3):
         self.min_frames = min_frames
-        # After the initial commit, how many additional frames of a
-        # continuous hold before the SAME letter is allowed to commit again.
-        # This is what makes a double letter (the "LL" in HELLO) register as
-        # two letters even if the signer holds it as one continuous shape
-        # instead of visibly bouncing between the two. Defaults to the same
-        # cadence as the initial commit.
-        self.repeat_interval = repeat_interval or min_frames
         self.current_letter = None
         self.frame_count = 0
         self.frame_no = 0
@@ -18,7 +11,13 @@ class Debouncer:
         return "".join(letter for letter, _ in self.commits)
 
     def update(self, letter, frame_no=None):
-        """Feed in the raw per-frame prediction each frame. Returns confirmed string."""
+        """Feed in the raw per-frame prediction each frame. Returns confirmed string.
+
+        Commits exactly once per continuous hold of the same letter. A real
+        double letter (the "LL" in HELLO) is captured by the signer bouncing
+        briefly out of the shape and back in -- that produces two separate
+        holds, and therefore two separate commits, naturally.
+        """
         self.frame_no = self.frame_no + 1 if frame_no is None else frame_no
 
         if letter == self.current_letter:
@@ -27,12 +26,8 @@ class Debouncer:
             self.current_letter = letter
             self.frame_count = 1
 
-        # Commit at min_frames, then again every repeat_interval frames after
-        # that for as long as the same letter keeps being held.
-        if letter and self.frame_count >= self.min_frames:
-            frames_since_first_commit = self.frame_count - self.min_frames
-            if frames_since_first_commit % self.repeat_interval == 0:
-                self.commits.append((letter, self.frame_no))
+        if self.frame_count == self.min_frames and letter:
+            self.commits.append((letter, self.frame_no))
 
         return self.confirmed_string
 

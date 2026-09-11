@@ -100,8 +100,20 @@ while True:
             probs = model.predict_proba(feats)[0]
             pred_idx = int(np.argmax(probs))
             confidence = probs[pred_idx]
+            top_guess = LETTERS[pred_idx]
             if confidence > CONFIDENCE_THRESHOLD:
-                predicted_letter = LETTERS[pred_idx]
+                predicted_letter = top_guess
+
+            # ── TEMP: always-on readout, even below threshold ───────────────
+            cv2.putText(frame, f"top guess: {top_guess} ({confidence:.0%})",
+                        (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 255), 1)
+
+        # ── TEMP: motion tuning overlay — remove once J/Z are working ───────
+        dbg = motion_detector.debug_info()
+        if dbg:
+            for i, (k, v) in enumerate(dbg.items()):
+                cv2.putText(frame, f"{k}: {v}", (w - 260, 30 + i * 22),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
 
         # ── Draw landmarks and prediction ───────────────────────────────────
         xs = [lm.x * w for lm in landmarks]

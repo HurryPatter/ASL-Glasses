@@ -143,3 +143,31 @@ class MotionDetector:
         start_frame = self.buffer[0]["frame"]
         self.buffer.clear()                        # never fire twice on one motion
         return letter, start_frame
+
+    # ── diagnostics (does not affect firing) ────────────────────────────
+    def debug_info(self):
+        """Live values for tuning thresholds. Call every frame; returns None
+        until the buffer has filled once."""
+        if len(self.buffer) < self.window:
+            return {"buffer": f"{len(self.buffer)}/{self.window}"}
+
+        ys = [f["pinky"][1] for f in self.buffer]
+        xs_p = [f["pinky"][0] for f in self.buffer]
+        third = len(self.buffer) // 3
+        j_dropped = ys[-1] - ys[0]
+        j_hooked = abs(xs_p[-1] - xs_p[-third])
+
+        xs_i = [f["index"][0] for f in self.buffer]
+        ys_i = [f["index"][1] for f in self.buffer]
+        strokes = self._strokes(xs_i)
+        z_drift = ys_i[-1] - ys_i[0]
+
+        return {
+            "buffer": f"{len(self.buffer)}/{self.window}",
+            "i_shape_held": f"{sum(f['i_shape'] for f in self.buffer)}/{len(self.buffer)}",
+            "point_shape_held": f"{sum(f['point_shape'] for f in self.buffer)}/{len(self.buffer)}",
+            "j_drop": round(j_dropped, 3),      # need > self.j_drop
+            "j_hook": round(j_hooked, 3),       # need > self.j_hook
+            "z_strokes": len(strokes),          # need 3, alternating
+            "z_drift": round(z_drift, 3),       # need > self.z_drop
+        }
