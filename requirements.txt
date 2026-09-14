@@ -1,0 +1,15 @@
+# Runtime pipeline (main.py, collect_data.py, evaluate.py)
+mediapipe>=0.10.9        # hand landmarker (hand_landmarker.task)
+opencv-python>=4.8       # camera capture + on-screen overlay
+numpy>=1.24              # landmark normalization
+scikit-learn>=1.3        # MLPClassifier -- the static landmark classifier
+joblib>=1.3              # model load/save
+symspellpy>=6.7          # spelling correction / word segmentation
+setuptools>=65           # provides pkg_resources, used to locate symspellpy's dictionary
+
+# Training only (train_classifier.py)
+pandas>=2.0
+
+# NOTE: TensorFlow/Keras are deliberately absent. The pipeline moved from a
+# Keras CNN over pixel crops to a scikit-learn MLP over MediaPipe landmarks;
+# nothing in the codebase imports TF any more.
