@@ -133,16 +133,6 @@ while True:
                 predicted_letter = top_guess
                 recent_guesses.append(top_guess)
 
-            cv2.putText(frame, f"top guess: {top_guess} ({confidence:.0%})",
-                        (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 100, 255), 1)
-
-        # ── TEMP: motion tuning overlay — remove once J/Z are fully settled ──
-        dbg = motion_detector.debug_info()
-        if dbg:
-            for i, (k, v) in enumerate(dbg.items()):
-                cv2.putText(frame, f"{k}: {v}", (w - 260, 30 + i * 22),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
-
         # ── Draw landmarks + smoothed display letter ────────────────────────
         xs = [lm.x * w for lm in landmarks]
         ys = [lm.y * h for lm in landmarks]

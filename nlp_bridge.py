@@ -20,7 +20,7 @@ class NLPBridge:
             engineering_words = [
                 "microcontroller", "mediapipe", "convolutional", "latency",
                 "debounce", "segmentation", "wearable", "inference",
-                "bandwidth", "accelerometer", "gyroscope", "symspell"
+                "bandwidth", "accelerometer", "gyroscope", "Laila"
             ]
             for word in engineering_words:
                 self.sym_spell.create_dictionary_entry(word, 10**9)

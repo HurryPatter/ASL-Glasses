@@ -1,0 +1,195 @@
+"""
+End-to-end evaluation harness.
+
+Unlike train_classifier.py's validation split (which only tests the
+classifier against held-out data from the SAME collection sessions), this
+runs the full live pipeline -- MediaPipe -> motion detector -> static
+classifier -> debouncer -- against a known target letter, the way it will
+actually be used. This is what should go in the thesis as the real
+accuracy number.
+
+Run once per condition (background/lighting/distance) you want to test.
+Each run appends to eval_results.csv rather than overwriting it, so you
+can build up results across many conditions over multiple sessions.
+
+Controls:
+  SPACE = start the capture window for the current target letter
+  N     = skip to the next letter without recording a result
+  Q     = quit and print the summary so far
+"""
+import csv
+import json
+import os
+import time
+from collections import Counter
+
+import cv2
+import numpy as np
+import joblib
+import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
+
+from debouncer import Debouncer
+from motion import MotionDetector
+
+LANDMARKER_PATH = "hand_landmarker.task"
+MODEL_PATH = "landmark_model.joblib"
+LABELS_PATH = "landmark_labels.json"
+CONFIDENCE_THRESHOLD = 0.85
+CAPTURE_WINDOW_S = 4.0          # how long you get per letter before it auto-advances
+RESULTS_PATH = "eval_results.csv"
+
+TARGET_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # includes J/Z, unlike collect_data.py
+
+
+def normalize_landmarks(landmarks, frame_w, frame_h):
+    pts = np.array([[lm.x, lm.y] for lm in landmarks], dtype=float)
+    pts[:, 0] *= frame_w
+    pts[:, 1] *= frame_h
+    v = pts[9] - pts[0]
+    size = np.linalg.norm(v) or 1e-6
+    y_hat = v / size
+    x_hat = np.array([y_hat[1], -y_hat[0]])
+    local = ((pts - pts[0]) @ np.stack([x_hat, y_hat], axis=1)) / size
+    if local[2][0] < 0:
+        local[:, 0] *= -1
+    return local.flatten()
+
+
+def main():
+    condition = input("Label this run (e.g. 'white_bg', 'dim_light', 'angled'): ").strip() or "unlabeled"
+
+    model = joblib.load(MODEL_PATH)
+    with open(LABELS_PATH) as f:
+        LETTERS = json.load(f)
+
+    base_options = mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH)
+    landmarker = mp_vision.HandLandmarker.create_from_options(
+        mp_vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=mp_vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=0.6,
+            min_hand_presence_confidence=0.6,
+            min_tracking_confidence=0.6,
+        )
+    )
+
+    cap = cv2.VideoCapture(0)
+    start_time = time.monotonic()
+
+    file_exists = os.path.exists(RESULTS_PATH)
+    csv_file = open(RESULTS_PATH, "a", newline="")
+    writer = csv.writer(csv_file)
+    if not file_exists:
+        writer.writerow(["condition", "expected", "committed", "correct"])
+
+    results = []  # (expected, committed, correct) for this run's summary
+
+    letter_idx = 0
+    capturing = False
+    capture_start = None
+    debouncer = Debouncer(min_frames=3)
+    motion_detector = MotionDetector()
+    frame_no = 0
+    consecutive_missed = 0
+    baseline_len = 0  # confirmed_string length when the capture window started
+
+    print(f"\nRunning eval for condition: {condition}")
+    print("SPACE = start capture | N = skip | Q = quit\n")
+
+    while letter_idx < len(TARGET_LETTERS):
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frame = cv2.flip(frame, 1)
+        h, w = frame.shape[:2]
+        frame_no += 1
+        timestamp_ms = int((time.monotonic() - start_time) * 1000)
+
+        target = TARGET_LETTERS[letter_idx]
+
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                             data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        result = landmarker.detect_for_video(mp_image, timestamp_ms)
+
+        predicted_letter = ""
+        motion_letter = ""
+        skip_debounce = False
+
+        if capturing and result.hand_landmarks:
+            consecutive_missed = 0
+            landmarks = result.hand_landmarks[0]
+            motion_letter, start_frame = motion_detector.update(landmarks, frame_no, timestamp_ms)
+            if motion_letter:
+                debouncer.commit_motion(motion_letter, start_frame)
+            elif not motion_detector.is_motion_candidate():
+                feats = normalize_landmarks(landmarks, w, h).reshape(1, -1)
+                probs = model.predict_proba(feats)[0]
+                pred_idx = int(np.argmax(probs))
+                if probs[pred_idx] > CONFIDENCE_THRESHOLD:
+                    predicted_letter = LETTERS[pred_idx]
+        elif capturing:
+            consecutive_missed += 1
+            if consecutive_missed >= 5:
+                motion_detector.clear()
+            else:
+                skip_debounce = True
+
+        if capturing:
+            if motion_letter or skip_debounce:
+                pass
+            else:
+                debouncer.update(predicted_letter, frame_no)
+
+            if time.monotonic() - capture_start > CAPTURE_WINDOW_S:
+                committed = debouncer.confirmed_string[baseline_len:]
+                correct = target in committed
+                results.append((target, committed, correct))
+                writer.writerow([condition, target, committed, correct])
+                csv_file.flush()
+                print(f"  {target}: got '{committed}' -> {'OK' if correct else 'MISS'}")
+                capturing = False
+                letter_idx += 1
+
+        # ── HUD ──────────────────────────────────────────────────────────
+        status = f"CAPTURING ({CAPTURE_WINDOW_S - (time.monotonic() - capture_start):.1f}s)" if capturing else "ready"
+        cv2.putText(frame, f"Sign: {target}   [{status}]", (10, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+        cv2.putText(frame, f"Progress: {letter_idx}/{len(TARGET_LETTERS)}", (10, 75),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        cv2.putText(frame, "SPACE=capture  N=skip  Q=quit", (10, h - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+        cv2.imshow("Evaluation", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('n') and not capturing:
+            results.append((target, "", False))
+            writer.writerow([condition, target, "", False])
+            letter_idx += 1
+        elif key == ord(' ') and not capturing:
+            capturing = True
+            capture_start = time.monotonic()
+            baseline_len = len(debouncer.confirmed_string)
+            motion_detector.clear()
+
+    csv_file.close()
+    landmarker.close()
+    cap.release()
+    cv2.destroyAllWindows()
+
+    # ── This run's summary ───────────────────────────────────────────────
+    if results:
+        n_correct = sum(1 for _, _, ok in results if ok)
+        print(f"\n{condition}: {n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
+        misses = [(t, c) for t, c, ok in results if not ok]
+        if misses:
+            print("Missed:", ", ".join(f"{t}->'{c}'" for t, c in misses))
+    print(f"\nAll results appended to {RESULTS_PATH}")
+
+
+if __name__ == "__main__":
+    main()
