@@ -1,0 +1,109 @@
+"""Offline tests for the dataset schema and person grouping.
+
+Standard library only -- these run in CI, which installs nothing.
+
+Run:  python -m unittest test_dataset -v
+"""
+import csv
+import os
+import tempfile
+import unittest
+
+import dataset
+
+
+class TestSchema(unittest.TestCase):
+
+    def test_header_shape(self):
+        self.assertEqual(len(dataset.LANDMARK_COLUMNS), 42)
+        self.assertEqual(dataset.HEADER[:2], ["label", "person"])
+        self.assertEqual(len(dataset.HEADER), 44)
+        self.assertEqual(len(dataset.LEGACY_HEADER), 43)
+
+    def test_person_is_not_a_feature_column(self):
+        # The training script selects features by this list, so `person`
+        # leaking into it would silently become a 43rd input feature.
+        self.assertNotIn("person", dataset.LANDMARK_COLUMNS)
+        self.assertNotIn("label", dataset.LANDMARK_COLUMNS)
+
+    def test_has_person_column(self):
+        self.assertTrue(dataset.has_person_column(dataset.HEADER))
+        self.assertFalse(dataset.has_person_column(dataset.LEGACY_HEADER))
+
+    def test_read_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "x.csv")
+            with open(path, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(dataset.HEADER)
+                w.writerow(["A", "omar"] + ["0.0"] * 42)
+            self.assertEqual(dataset.read_header(path), dataset.HEADER)
+
+
+class TestBursts(unittest.TestCase):
+
+    def test_bursts_are_runs_of_identical_labels(self):
+        self.assertEqual(dataset.bursts(["A", "A", "B", "B", "B", "A"]),
+                         [("A", 0, 2), ("B", 2, 5), ("A", 5, 6)])
+
+    def test_empty(self):
+        self.assertEqual(dataset.bursts([]), [])
+
+    def test_single_row(self):
+        self.assertEqual(dataset.bursts(["A"]), [("A", 0, 1)])
+
+
+class TestSessionInference(unittest.TestCase):
+
+    def test_two_alphabet_passes(self):
+        labels = ["A"] * 3 + ["B"] * 4 + ["A"] * 2 + ["B"] * 3
+        self.assertEqual(dataset.infer_sessions(labels),
+                         [0] * 7 + [1] * 5)
+
+    def test_multi_frame_bursts_do_not_split_a_session(self):
+        # The bug this guards: comparing row-by-row makes the second frame of
+        # every burst look like a repeated label, yielding one session per row.
+        labels = ["A"] * 200 + ["B"] * 200
+        self.assertEqual(set(dataset.infer_sessions(labels)), {0})
+
+    def test_labels_unique_to_one_pass_do_not_start_a_session(self):
+        # The word signs were recorded once, inside one pass.
+        labels = (["A"] * 2 + ["B"] * 2 + ["HELLO"] * 2
+                  + ["A"] * 2 + ["B"] * 2)
+        self.assertEqual(dataset.infer_sessions(labels), [0] * 6 + [1] * 4)
+
+    def test_three_passes(self):
+        labels = []
+        for _ in range(3):
+            for letter in "ABC":
+                labels += [letter] * 5
+        sessions = dataset.infer_sessions(labels)
+        self.assertEqual(sorted(set(sessions)), [0, 1, 2])
+        self.assertEqual(sessions.count(0), 15)
+
+    def test_real_dataset_splits_into_three_people(self):
+        """Guards the actual committed file, not a synthetic case."""
+        path = os.path.join(os.path.dirname(__file__), "landmark_data.csv")
+        if not os.path.exists(path):
+            self.skipTest("landmark_data.csv not present")
+        with open(path, newline="") as fh:
+            rows = list(csv.reader(fh))
+        header, body = rows[0], rows[1:]
+        self.assertEqual(header, dataset.HEADER,
+                         "landmark_data.csv should carry the person column")
+        people = {r[1] for r in body}
+        self.assertEqual(people, {"omar", "laila", "nourhan", "unknown"})
+        # The word signs were recorded by all three signers in one sitting with
+        # no boundary in the file, so they must stay unattributed rather than
+        # being credited to whichever pass they happen to sit next to.
+        word_rows = {r[0] for r in body if r[1] == dataset.UNKNOWN_PERSON}
+        self.assertEqual(word_rows, {"ILY", "IHATEYOU", "HELLO"})
+        for r in body:
+            if len(r[0]) > 1:
+                self.assertEqual(r[1], dataset.UNKNOWN_PERSON)
+        # Every row has a person and the full 42 features.
+        self.assertTrue(all(len(r) == 44 and r[1] for r in body))
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
