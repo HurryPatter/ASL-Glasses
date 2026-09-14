@@ -90,7 +90,7 @@ def main():
     letter_idx = 0
     capturing = False
     capture_start = None
-    debouncer = Debouncer(min_frames=3)
+    debouncer = Debouncer()
     motion_detector = MotionDetector()
     frame_no = 0
     consecutive_missed = 0
@@ -141,7 +141,7 @@ def main():
             if motion_letter or skip_debounce:
                 pass
             else:
-                debouncer.update(predicted_letter, frame_no)
+                debouncer.update(predicted_letter, frame_no, timestamp_ms)
 
             if time.monotonic() - capture_start > CAPTURE_WINDOW_S:
                 committed = debouncer.confirmed_string[baseline_len:]

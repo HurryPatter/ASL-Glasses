@@ -41,7 +41,7 @@ landmarker_options = mp_vision.HandLandmarkerOptions(
 landmarker = mp_vision.HandLandmarker.create_from_options(landmarker_options)
 
 print("Initialising pipeline...")
-debouncer = Debouncer(min_frames=3)
+debouncer = Debouncer()
 motion_detector = MotionDetector()
 nlp = NLPBridge(mode="academic")
 audio = AudioOutput()
@@ -164,7 +164,7 @@ while True:
 
     # ── Debounce (static letters only — motion letters already committed) ──
     if not (motion_letter or skip_debounce_this_frame):
-        debouncer.update(predicted_letter, frame_no)
+        debouncer.update(predicted_letter, frame_no, timestamp_ms)
     labels = [label for label, _ in debouncer.commits]
     raw_display = " ".join(labels)
     corrected = nlp.correct_sequence(labels)

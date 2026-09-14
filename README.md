@@ -109,6 +109,21 @@ architecture change.
 G was read correctly in the second run, so the G/Q confusion is not (yet) a
 recurring failure. See `NOTES.md` for the open issues behind both misses.
 
+`evaluate.py` scores with a substring test, so a committed string of
+`QQQQQQQQQQ` counts as a correct `Q`. Both runs above predate the debouncer fix
+and contain many such strings — see `NOTES.md`.
+
+## Tests
+
+```bash
+python -m unittest test_debouncer -v
+```
+
+`debouncer.py` is pure logic, so it is tested offline against synthesised frame
+streams with explicit timestamps — no camera, MediaPipe or trained model
+required. `python test_debouncer.py` additionally replays the repeated strings
+recorded in `eval_results.csv` through both the old and the new implementation.
+
 ## Repository layout
 
 | File | Role |
@@ -118,9 +133,10 @@ recurring failure. See `NOTES.md` for the open issues behind both misses.
 | `train_classifier.py` | MLP training + per-class metrics |
 | `evaluate.py` | End-to-end accuracy benchmark |
 | `motion.py` | J/Z trajectory detection |
-| `debouncer.py` | One commit per continuous hold |
+| `debouncer.py` | One commit per letter run (wall-clock timed) |
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Windows TTS output |
+| `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |
 | `eval_results.csv` | Accumulated evaluation log |

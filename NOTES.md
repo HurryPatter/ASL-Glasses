@@ -31,6 +31,41 @@ running on embedded hardware by then.
 
 ## Known issues
 
+### FIXED: a single steady hold committed the same letter many times
+
+`eval_results.csv` recorded committed strings like `QQQQQQQQQQ`, `GGGGGGGGGGG`
+and `IIIIIIIIII` from one continuous hold. The old debouncer treated `""` as
+just another label, so any frame without a reading reset the hold and the
+letter re-committed a few frames later. `main.py` produces `""` for three
+separate reasons, none of which mean the signer let go:
+
+1. confidence at or below 0.85 (`main.py:132`),
+2. `is_motion_candidate()` suppressing static classification (`main.py:119`),
+3. tracking dropout past `MISSED_FRAME_TOLERANCE` (`main.py:158`).
+
+Source 2 explains the worst strings. Checking `_is_point_shape` /
+`_is_i_shape` over all 21,526 rows of `landmark_data.csv`: X (100%), L (99%),
+I (99%), Y (98%), G (98%) and Q (84%) all satisfy the motion gate while held
+perfectly still, and those are exactly the letters with the longest repeat
+runs. A/B/C/F/W never trip it and never repeated. The gate only needs 0.08
+hand-widths of drift over 180ms, which ordinary tremor clears.
+
+`debouncer.py` now distinguishes absence of evidence (`""`) from evidence of a
+different handshape, and commits once per letter *run* rather than per hold.
+See `test_debouncer.py`, which replays the recorded strings through both the
+old and new implementations.
+
+**Still worth tuning separately:** `is_motion_candidate()` is over-broad. It
+fires on six static letters, and the debouncer now absorbs the consequences
+rather than removing the cause. Raising `deadband` or requiring sustained
+directional motion would cut the blank frames at the source.
+
+**`evaluate.py` scores `target in committed`** (line 148), a substring test, so
+`QQQQQQQQQQ` counted as correct. The 96.2% figure is blind to this class of
+bug. Tightening it to exact-match once the fix is validated on camera would
+give a more defensible thesis number, and re-scoring the existing
+`eval_results.csv` under exact-match is a free before/after measurement.
+
 ### Z occasionally never fires (read as X instead)
 
 Seen in the `white_bg_dim` run: expected `Z`, committed `XX`. In the earlier
@@ -99,11 +134,11 @@ would give up the "fully on-device" result. Needs to be locked down soon.
 
 ## Deliberate non-changes
 
-- **`debouncer.py` commits once per continuous hold** (`frame_count ==
-  min_frames`). Do **not** change this to a periodic-repeat scheme — that was
-  tried and reverted. Double letters (the "LL" in HELLO) are meant to come from
-  the signer briefly bouncing out of the shape and back in, producing two
-  separate holds and therefore two separate commits.
+- **`debouncer.py` commits once per letter run.** Do **not** change this to a
+  periodic-repeat scheme — that was tried and reverted. Double letters (the
+  "LL" in HELLO) come from the signer briefly bouncing out of the shape and
+  back in; that bounce must now last longer than `blank_ms` (250ms) to read
+  as two runs.
 - **`motion.py` uses wall-clock time windows, not frame counts.** A frame-count
   window means a different real-world duration on every device; embedded
   hardware will not match the dev laptop's fps. Keep it time-based.
@@ -136,8 +171,10 @@ would give up the "fully on-device" result. Needs to be locked down soon.
 2. Retrain on the combined dataset.
 3. More `evaluate.py` rounds across people and conditions, to build a
    defensible accuracy number and to settle whether G/Q is real.
-4. Instrument and fix the Z window (above) — this is the one confirmed
-   recognition bug with a concrete diagnosis.
-5. **Decide the embedded hardware target (MCU vs. SBC)** — gates the port off
+4. Instrument and fix the Z window (above).
+5. Validate the debouncer fix on camera — specifically the "LL" in HELLO,
+   which now needs a bounce longer than `blank_ms` (250ms). If doubles are
+   hard to produce, lower `blank_ms`; if single holds still repeat, raise it.
+6. **Decide the embedded hardware target (MCU vs. SBC)** — gates the port off
    the dev laptop.
-6. Update the thesis slides to the actual on-device architecture.
+7. Update the thesis slides to the actual on-device architecture.
