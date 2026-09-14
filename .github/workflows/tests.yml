@@ -1,0 +1,26 @@
+# Runs the offline tests on every push and pull request.
+#
+# Only the pure-logic parts of the pipeline can run here: the GitHub runner has
+# no camera and no trained model, so this catches logic regressions (e.g. the
+# debouncer committing a letter twice), never recognition accuracy. Accuracy
+# still comes from running evaluate.py by hand.
+#
+# No pip install step on purpose -- test_debouncer.py imports only debouncer.py
+# and the standard library, so it needs neither MediaPipe nor scikit-learn and
+# finishes in seconds.
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run debouncer tests
+        run: python -m unittest test_debouncer -v

@@ -119,6 +119,12 @@ and contain many such strings — see `NOTES.md`.
 python -m unittest test_debouncer -v
 ```
 
+These run automatically on every push and pull request via GitHub Actions
+(`.github/workflows/tests.yml`), so a regression shows up as a red ✗ on the
+pull request. The runner has no camera and no trained model, so CI covers
+logic regressions only — recognition accuracy still comes from running
+`evaluate.py` by hand.
+
 `debouncer.py` is pure logic, so it is tested offline against synthesised frame
 streams with explicit timestamps — no camera, MediaPipe or trained model
 required. `python test_debouncer.py` additionally replays the repeated strings
