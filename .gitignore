@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Note: landmark_data.csv, landmark_model.joblib, landmark_labels.json,
+# eval_results.csv and hand_landmarker.task are tracked ON PURPOSE -- the
+# dataset, the trained model and the accumulated evaluation log are project
+# results, not build artifacts.
