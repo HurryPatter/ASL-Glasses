@@ -12,7 +12,16 @@ J and Z are motion signs (handled separately, see motion.py on the trial
 branch) and are skipped here -- this collects the 24 static letters only.
 
 Output: landmark_data.csv, one row per captured frame:
-    label, p0_x, p0_y, p1_x, p1_y, ..., p20_x, p20_y   (1 + 42 columns)
+    label, person, p0_x, p0_y, ..., p20_x, p20_y   (2 + 42 columns)
+
+The `person` column is asked for at startup and matters more than the row
+count: a random train/test split over frames measures memorisation, because
+frames within one recording are near-duplicates. Accuracy is reported by
+holding out a whole person, so every row needs to say who signed it.
+
+Collect from as many different people as you can. Measured on the first three,
+a second person was worth about +10 points on an unseen signer, while tripling
+the rows from the same people was worth nothing.
 
 Controls:
   [ / ]   = previous / next letter
@@ -23,10 +32,13 @@ import cv2
 import csv
 import os
 import math
+import sys
 import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+
+import dataset
 
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 LETTERS = [c for c in ALPHABET if c not in ("J", "Z")]  # motion signs, skipped
@@ -43,6 +55,12 @@ LABELS = LETTERS + WORDS
 LANDMARKER_PATH = "hand_landmarker.task"
 OUT_PATH = "landmark_data.csv"
 CAPTURE_EVERY_N_FRAMES = 2  # avoid logging near-duplicate consecutive frames
+
+# Past this many rows for one label, a person is mostly contributing duplicate
+# frames. Measured: accuracy on an unseen signer plateaued at roughly 4,000
+# training rows total, so ~100 per label per person is where effort is better
+# spent on another person than on a longer take.
+SUGGESTED_ROWS_PER_LABEL = 100
 
 
 def normalize_landmarks(landmarks, frame_w, frame_h):
@@ -66,7 +84,38 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
     return local.flatten().tolist()
 
 
+def ask_person():
+    """Who is signing. Recorded per row so accuracy can be measured by holding
+    out a whole person rather than a random sample of near-duplicate frames."""
+    while True:
+        name = input("Who is signing? (first name, e.g. omar): ").strip().lower()
+        if name and all(c.isalnum() or c in "-_" for c in name):
+            return name
+        print("  Please enter a single name (letters/digits, no spaces).")
+
+
+def open_output(person):
+    """Append to landmark_data.csv, refusing to mix schemas."""
+    if os.path.exists(OUT_PATH):
+        header = dataset.read_header(OUT_PATH)
+        if not dataset.has_person_column(header):
+            sys.exit(
+                f"{OUT_PATH} predates the `person` column. Run "
+                f"`python backfill_person.py` first, then collect."
+            )
+        if header != dataset.HEADER:
+            sys.exit(f"{OUT_PATH} has an unexpected header; not appending to it.")
+        csv_file = open(OUT_PATH, "a", newline="")
+        return csv_file, csv.writer(csv_file)
+
+    csv_file = open(OUT_PATH, "a", newline="")
+    writer = csv.writer(csv_file)
+    writer.writerow(dataset.HEADER)
+    return csv_file, writer
+
+
 def main():
+    person = ask_person()
     base_options = mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH)
     options = mp_vision.HandLandmarkerOptions(
         base_options=base_options,
@@ -81,21 +130,19 @@ def main():
     cap = cv2.VideoCapture(0)
     frame_timestamp_ms = 0
 
-    file_exists = os.path.exists(OUT_PATH)
-    csv_file = open(OUT_PATH, "a", newline="")
-    writer = csv.writer(csv_file)
-    if not file_exists:
-        header = ["label"] + [f"p{i}_{axis}" for i in range(21) for axis in ("x", "y")]
-        writer.writerow(header)
+    csv_file, writer = open_output(person)
 
     letter_idx = 0
     recording = False
     frame_count = 0
     saved_counts = {L: 0 for L in LABELS}
 
-    print("Data collection ready.")
+    print(f"Data collection ready -- signing as '{person}'.")
     print("[ / ] = prev/next letter | SPACE = start/stop recording | Q = quit")
-    print("Tip: vary background, lighting, and hand distance/angle between takes.")
+    print(f"Aim for ~{SUGGESTED_ROWS_PER_LABEL} rows per label, then stop.")
+    print("Move the hand slowly while recording -- rotate it, shift it around the")
+    print("frame, change distance. A frozen pose gives hundreds of near-identical")
+    print("rows; the same time spent moving gives far more usable variety.")
 
     while True:
         ret, frame = cap.read()
@@ -121,15 +168,20 @@ def main():
             if recording:
                 frame_count += 1
                 if frame_count % CAPTURE_EVERY_N_FRAMES == 0:
-                    row = [current_letter] + normalize_landmarks(landmarks, w, h)
+                    row = [current_letter, person] + normalize_landmarks(landmarks, w, h)
                     writer.writerow(row)
                     saved_counts[current_letter] += 1
         else:
             cv2.putText(frame, "No hand detected", (10, h - 70),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
-        cv2.putText(frame, f"Letter: {current_letter}  (saved: {saved_counts[current_letter]})",
-                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, status_color, 2)
+        saved = saved_counts[current_letter]
+        enough = " ENOUGH" if saved >= SUGGESTED_ROWS_PER_LABEL else ""
+        cv2.putText(frame, f"{current_letter}  ({saved}/{SUGGESTED_ROWS_PER_LABEL}{enough})",
+                    (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                    (0, 255, 255) if enough else status_color, 2)
+        cv2.putText(frame, f"signer: {person}", (10, 115),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         cv2.putText(frame, "REC" if recording else "PAUSED",
                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
         cv2.putText(frame, "[ / ] letter   SPACE rec/pause   Q quit",
@@ -153,8 +205,12 @@ def main():
     landmarker.close()
     cap.release()
     cv2.destroyAllWindows()
-    print(f"Saved to {OUT_PATH}")
-    print("Per-letter counts:", saved_counts)
+    print(f"Saved to {OUT_PATH} as '{person}'")
+    recorded = {k: v for k, v in saved_counts.items() if v}
+    print("Per-label counts:", recorded)
+    missing = [l for l in LABELS if not saved_counts[l]]
+    if missing:
+        print(f"Not recorded this session: {', '.join(missing)}")
 
 
 if __name__ == "__main__":

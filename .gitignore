@@ -6,6 +6,9 @@ __pycache__/
 venv/
 env/
 
+# Backup written by backfill_person.py
+*.csv.bak
+
 # OS / editor
 .DS_Store
 Thumbs.db

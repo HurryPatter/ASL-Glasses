@@ -5,9 +5,9 @@
 # debouncer committing a letter twice), never recognition accuracy. Accuracy
 # still comes from running evaluate.py by hand.
 #
-# No pip install step on purpose -- test_debouncer.py imports only debouncer.py
-# and the standard library, so it needs neither MediaPipe nor scikit-learn and
-# finishes in seconds.
+# No pip install step on purpose -- the test modules import only debouncer.py
+# and dataset.py plus the standard library, so they need neither MediaPipe nor
+# scikit-learn and finish in seconds.
 name: tests
 
 on: [push, pull_request]
@@ -22,5 +22,5 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Run debouncer tests
-        run: python -m unittest test_debouncer -v
+      - name: Run offline tests
+        run: python -m unittest discover -p "test_*.py" -v

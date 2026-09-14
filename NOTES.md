@@ -31,6 +31,47 @@ running on embedded hardware by then.
 
 ## Known issues
 
+### FIXED: reported accuracy was measured the wrong way
+
+`train_classifier.py` used a random 15% row split. Frames inside one recording
+burst are near-duplicates of a single held pose — measured on the collected
+data, consecutive frames in a burst sit about 5x closer together than two random
+frames of the same label. A shuffled split therefore trains on frame 200 and
+tests on frame 201, measuring memorisation rather than recognition.
+
+Measured on the three signers, on letters only:
+
+| Measurement | Accuracy |
+| --- | --- |
+| Random 15% row split | 98.6% |
+| Leave-one-person-out | **81.7%** (per-person: 80.4 / 75.6 / 89.0) |
+
+It also answers how much more data to collect:
+
+| Training set | Accuracy on an unseen signer |
+| --- | --- |
+| 1 person | 71.9% |
+| 2 people | 81.7% |
+| 2,176 rows (2 people) | 77.4% |
+| 4,352 rows | 80.2% |
+| 7,254 rows | 81.3% |
+| 14,509 rows | 80.4% |
+
+Rows saturate around 4,000; people do not. The second signer was worth about
++10 points. Collect **~100 rows per label per person** and then recruit the next
+person — roughly 8-10 people is the conventional target, though with only
+three signers that extrapolation is not something this data proves.
+
+`landmark_data.csv` now carries a `person` column (`backfill_person.py`
+attributed the historical rows from the recording structure), `collect_data.py`
+asks who is signing, and `train_classifier.py` reports leave-one-person-out as
+the headline with the random-split figure printed only as an explicitly
+inflated comparison.
+
+**`ILY`, `IHATEYOU` and `HELLO` were signed by one person only** and are
+excluded from the cross-person figure — there is currently no evidence they
+work on anyone else's hands. Highest priority in the next collection session.
+
 ### FIXED: a single steady hold committed the same letter many times
 
 `eval_results.csv` recorded committed strings like `QQQQQQQQQQ`, `GGGGGGGGGGG`
@@ -165,9 +206,10 @@ would give up the "fully on-device" result. Needs to be locked down soon.
 
 ## Next steps
 
-1. More letter data from teammates — multi-person, multi-environment session.
-   Class counts are currently uneven (A 618 … G 1045); the word signs are the
-   thinnest classes at 341–490 and would benefit most.
+1. Collection session with the rest of the team. Target ~100 rows per label
+   per person and as many people as possible (8-10); the three word signs
+   need a second signer most urgently. Rows per person stop paying off past
+   roughly 100/label — see the accuracy issue above.
 2. Retrain on the combined dataset.
 3. More `evaluate.py` rounds across people and conditions, to build a
    defensible accuracy number and to settle whether G/Q is real.

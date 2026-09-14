@@ -56,12 +56,24 @@ on Linux/macOS everything else works, but speech output will not.
 | --- | --- | --- |
 | `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak current text |
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
-| `python train_classifier.py` | Train the MLP → `landmark_model.joblib` + `landmark_labels.json` | — |
+| `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
 | `python evaluate.py` | Accuracy benchmark against known target letters → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |
 
-`collect_data.py` **appends** and never overwrites, so data from multiple people
-and sessions accumulates. Multi-person collection is encouraged — more hand
-shapes and sizes generalize better.
+`collect_data.py` asks who is signing and **appends** (never overwrites), so data
+from multiple people accumulates.
+
+**Collect from more people, not more frames per person.** Measured on the first
+three signers, testing against a person the model had never seen:
+
+| Change | Effect |
+| --- | --- |
+| 1 person → 2 people training | 71.9% → **81.7%** |
+| 4,352 → 14,509 rows from the same people | 80.2% → 80.4% (nothing) |
+
+Accuracy plateaus around 4,000 training rows, so aim for **~100 rows per label
+per person** and then move on to the next person. While recording, move the hand
+slowly — rotate it, shift it, change distance. A frozen pose produces hundreds
+of near-identical rows; the same time spent moving produces far more variety.
 
 `evaluate.py` is the real accuracy number, distinct from the training/validation
 split printed by `train_classifier.py`: it runs the *whole* live pipeline
@@ -113,10 +125,28 @@ recurring failure. See `NOTES.md` for the open issues behind both misses.
 `QQQQQQQQQQ` counts as a correct `Q`. Both runs above predate the debouncer fix
 and contain many such strings — see `NOTES.md`.
 
+### Model accuracy, measured honestly
+
+`train_classifier.py` reports **leave-one-person-out** accuracy: train on
+everyone else, test on a signer the model has never seen.
+
+| Measurement | Result |
+| --- | --- |
+| Random 15% row split | 98.6% — **inflated, do not quote** |
+| **Held-out person (3 signers)** | **81.7%** |
+
+The gap is near-duplicate leakage: frames inside one recording burst are about
+5× closer to each other than two random frames of the same label, so a shuffled
+split trains on frame 200 and tests on frame 201. The held-out-person number is
+what a stranger at a demo experiences.
+
+`ILY`, `IHATEYOU` and `HELLO` were signed by **one person only**, so they cannot
+be validated cross-person yet and are excluded from that figure.
+
 ## Tests
 
 ```bash
-python -m unittest test_debouncer -v
+python -m unittest discover -p "test_*.py" -v
 ```
 
 These run automatically on every push and pull request via GitHub Actions
@@ -143,7 +173,10 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Windows TTS output |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
-| `landmark_data.csv` | Training data (21,526 rows, 27 classes) |
+| `test_dataset.py` | Offline schema/grouping tests |
+| `dataset.py` | Dataset schema + person grouping (stdlib only) |
+| `backfill_person.py` | One-off: adds `person` to pre-existing rows |
+| `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |
 | `eval_results.csv` | Accumulated evaluation log |
 | `hand_landmarker.task` | MediaPipe hand landmarker model |
