@@ -44,7 +44,7 @@ Measured on the three signers, on letters only:
 | Measurement | Accuracy |
 | --- | --- |
 | Random 15% row split | 98.6% |
-| Leave-one-person-out | **81.7%** (per-person: 80.4 / 75.6 / 89.0) |
+| Leave-one-person-out | **79.3%** (omar 81.9, laila 74.0, nourhan 83.1) |
 
 It also answers how much more data to collect:
 
@@ -68,9 +68,18 @@ asks who is signing, and `train_classifier.py` reports leave-one-person-out as
 the headline with the random-split figure printed only as an explicitly
 inflated comparison.
 
-**`ILY`, `IHATEYOU` and `HELLO` were signed by one person only** and are
-excluded from the cross-person figure — there is currently no evidence they
-work on anyone else's hands. Highest priority in the next collection session.
+**`ILY`, `IHATEYOU` and `HELLO` cannot be validated across people.** All three
+signers recorded them in one sitting, and since each label is a single
+continuous run there is no boundary in the file marking who signed what. Their
+rows are marked `unknown`: trained on in every fold, never tested on. Guessing
+an attribution would corrupt the grouping every number here depends on.
+Re-collect them with the signer recorded.
+
+Cross-person confusions rank differently from the in-sample ones, which is
+itself a result: **K->P 415, P->K 410, S->N 345, N->S 242**, all larger than
+**G->Q 146** (and G->X 168 is larger still). The K/P and S/N pairs were
+invisible in the 98.6% figure and are now the biggest accuracy problem —
+bigger than the G/Q question that had been the open one.
 
 ### FIXED: a single steady hold committed the same letter many times
 

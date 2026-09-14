@@ -133,15 +133,24 @@ everyone else, test on a signer the model has never seen.
 | Measurement | Result |
 | --- | --- |
 | Random 15% row split | 98.6% — **inflated, do not quote** |
-| **Held-out person (3 signers)** | **81.7%** |
+| **Held-out person, pooled** | **79.3%** |
+| — held out Omar | 81.9% |
+| — held out Laila | 74.0% |
+| — held out Nourhan | 83.1% |
 
 The gap is near-duplicate leakage: frames inside one recording burst are about
 5× closer to each other than two random frames of the same label, so a shuffled
 split trains on frame 200 and tests on frame 201. The held-out-person number is
 what a stranger at a demo experiences.
 
-`ILY`, `IHATEYOU` and `HELLO` were signed by **one person only**, so they cannot
-be validated cross-person yet and are excluded from that figure.
+`ILY`, `IHATEYOU` and `HELLO` were recorded by all three signers in one sitting,
+with no boundary in the file showing where one stops, so their rows are marked
+`unknown`: trained on in every fold, never tested on, and excluded from the
+figure above. Re-collecting them with the signer recorded is the fastest way to
+put them on the same footing as the letters.
+
+The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/242)
+— both bigger than G→Q (146), which the in-sample number hid entirely.
 
 ## Tests
 
