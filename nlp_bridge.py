@@ -4,6 +4,16 @@ import pkg_resources
 # Team names -- always recognized, independent of academic/normal mode.
 TEAM_NAMES = ["omar", "hagar", "laila", "nourhan", "hassan"]
 
+# Static word signs, mapped to how they should be displayed. Anything the
+# classifier outputs that isn't a single letter is looked up here -- this is
+# the only place a new static word sign needs to be registered once its
+# training data and label exist (see collect_data.py's WORDS list).
+WORD_SIGNS = {
+    "ILY": "I love you",
+    "IHATEYOU": "I hate you",
+    "HELLO": "Hello",
+}
+
 
 class NLPBridge:
     def __init__(self, mode="normal"):
@@ -38,11 +48,42 @@ class NLPBridge:
                 self.sym_spell.create_dictionary_entry(word, 10**9)
 
     def correct(self, raw_string):
-        """Takes the debounced letter string, returns corrected sentence."""
+        """Takes a fingerspelled letter string, returns corrected sentence.
+        Only ever called on runs of single-character labels -- see
+        correct_sequence() for input containing word-sign tokens too."""
         if not raw_string:
             return ""
         results = self.sym_spell.word_segmentation(raw_string)
         return results.corrected_string
+
+    def correct_sequence(self, labels):
+        """Takes the debouncer's ordered list of committed labels -- a mix
+        of single fingerspelled letters and whole-word sign tokens (e.g.
+        'ILY') -- and returns corrected, readable text.
+
+        Word tokens are NOT run through spell-segmentation (they're already
+        a complete lexical unit, not letters to be spelled out); consecutive
+        letters are grouped into runs and corrected exactly as before.
+        """
+        pieces = []
+        letter_buffer = []
+
+        def flush():
+            if letter_buffer:
+                corrected = self.correct("".join(letter_buffer))
+                if corrected:
+                    pieces.append(corrected)
+                letter_buffer.clear()
+
+        for label in labels:
+            if len(label) == 1:
+                letter_buffer.append(label)
+            else:
+                flush()
+                pieces.append(WORD_SIGNS.get(label, label))
+        flush()
+
+        return " ".join(pieces)
 
     def set_mode(self, mode):
         self.mode = mode

@@ -163,14 +163,14 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
     # ── Debounce (static letters only — motion letters already committed) ──
-    if motion_letter or skip_debounce_this_frame:
-        raw_string = debouncer.confirmed_string
-    else:
-        raw_string = debouncer.update(predicted_letter, frame_no)
-    corrected = nlp.correct(raw_string)
+    if not (motion_letter or skip_debounce_this_frame):
+        debouncer.update(predicted_letter, frame_no)
+    labels = [label for label, _ in debouncer.commits]
+    raw_display = " ".join(labels)
+    corrected = nlp.correct_sequence(labels)
 
     # ── HUD ────────────────────────────────────────────────────────────────
-    cv2.putText(frame, f"Raw: {raw_string[-30:]}",
+    cv2.putText(frame, f"Raw: {raw_display[-40:]}",
                 (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
     cv2.putText(frame, f"Corrected: {corrected}",
                 (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 0), 2)

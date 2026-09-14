@@ -31,6 +31,15 @@ from mediapipe.tasks.python import vision as mp_vision
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 LETTERS = [c for c in ALPHABET if c not in ("J", "Z")]  # motion signs, skipped
 
+# Static word signs (not fingerspelled) go here. Add new ones the same way --
+# any static, single-handed handshape can be collected identically to a
+# letter. Multi-character labels are what tell main.py "this is a whole
+# word, not a fingerspelled character" -- no other code needs to know about
+# a specific new word.
+WORDS = ["ILY", "IHATEYOU", "HELLO"]
+
+LABELS = LETTERS + WORDS
+
 LANDMARKER_PATH = "hand_landmarker.task"
 OUT_PATH = "landmark_data.csv"
 CAPTURE_EVERY_N_FRAMES = 2  # avoid logging near-duplicate consecutive frames
@@ -82,7 +91,7 @@ def main():
     letter_idx = 0
     recording = False
     frame_count = 0
-    saved_counts = {L: 0 for L in LETTERS}
+    saved_counts = {L: 0 for L in LABELS}
 
     print("Data collection ready.")
     print("[ / ] = prev/next letter | SPACE = start/stop recording | Q = quit")
@@ -100,7 +109,7 @@ def main():
         frame_timestamp_ms += 33
         result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
 
-        current_letter = LETTERS[letter_idx]
+        current_letter = LABELS[letter_idx]
         status_color = (0, 255, 0) if recording else (0, 0, 255)
 
         if result.hand_landmarks:
@@ -132,10 +141,10 @@ def main():
         if key == ord('q'):
             break
         elif key == ord('['):
-            letter_idx = (letter_idx - 1) % len(LETTERS)
+            letter_idx = (letter_idx - 1) % len(LABELS)
             recording = False
         elif key == ord(']'):
-            letter_idx = (letter_idx + 1) % len(LETTERS)
+            letter_idx = (letter_idx + 1) % len(LABELS)
             recording = False
         elif key == ord(' '):
             recording = not recording
