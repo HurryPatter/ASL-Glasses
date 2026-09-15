@@ -142,8 +142,7 @@ hand went somewhere" from "the fingers wobbled in place". A hand that has not
 moved has not signed a motion letter, however noisy its landmarks — retuning
 `z_stroke` would only have moved the noise floor.
 
-`debug_info()` now reports `hand_travel` so the threshold can be tuned against
-a real Z rather than guessed.
+`debug_info()` now reports `hand_travel`, and `main.py` can finally show it: press **D** for the readout. It had been dead code -- computed every frame, never called anywhere -- so none of these thresholds could be tuned against a real hand.
 
 **This was already intermittent before the fix** — it stopped reproducing
 after an unrelated retrain, which cannot have affected it: `motion.py` never

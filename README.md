@@ -54,7 +54,7 @@ on Linux/macOS everything else works, but speech output will not.
 
 | Command | What it does | Keys |
 | --- | --- | --- |
-| `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak current text |
+| `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak · `d` motion debug readout |
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
 | `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
 | `python evaluate.py` | Accuracy benchmark against known target letters → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |

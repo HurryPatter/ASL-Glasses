@@ -46,6 +46,7 @@ motion_detector = MotionDetector()
 nlp = NLPBridge(mode="academic")
 audio = AudioOutput()
 recent_guesses = deque(maxlen=DISPLAY_SMOOTHING_N)  # display-only, never fed to the debouncer
+show_debug = False           # D toggles the motion-detector readout
 
 
 # ── Landmark normalization (must match collect_data.py exactly) ────────────
@@ -174,9 +175,26 @@ while True:
                 (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
     cv2.putText(frame, f"Corrected: {corrected}",
                 (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 0), 2)
-    cv2.putText(frame, "Q=quit R=reset S=speak",
+    cv2.putText(frame, "Q=quit R=reset S=speak D=debug",
                 (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX,
                 0.5, (150, 150, 150), 1)
+
+    # ── Motion-detector readout (D) ────────────────────────────────────────
+    # Off by default so a demo stays clean. The point of showing these is that
+    # the J/Z thresholds are the only numbers in the pipeline that have to be
+    # tuned against a real hand -- hand_travel in particular, which is what
+    # stops a held Q from firing Z. Watch the value while signing a real Z and
+    # while holding a Q: z_travel belongs between the two.
+    if show_debug:
+        y = 150
+        for key, value in motion_detector.debug_info().items():
+            cv2.putText(frame, f"{key}: {value}", (10, y),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
+            y += 20
+        cv2.putText(frame, f"thresholds: travel>{motion_detector.z_travel} "
+                           f"stroke>{motion_detector.z_stroke} "
+                           f"drift>{motion_detector.z_drop}",
+                    (10, y + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (160, 160, 160), 1)
 
     cv2.imshow("ASL Translator", frame)
 
@@ -191,6 +209,8 @@ while True:
     elif key == ord('s'):
         audio.speak(corrected)
         print(f"Spoken: {corrected}")
+    elif key == ord('d'):
+        show_debug = not show_debug
 
 # ── Cleanup ────────────────────────────────────────────────────────────────
 landmarker.close()
