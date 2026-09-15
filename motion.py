@@ -11,6 +11,42 @@ that's the part that matters for portability. A frame-count window (e.g.
 camera/device; a millisecond window represents the same gesture duration
 everywhere, whether the camera runs at 30fps on a laptop or something
 slower on embedded hardware.
+
+Adding another motion sign
+--------------------------
+Each sign is a predicate over the buffer plus its own thresholds, checked in
+update(). Three primitives exist to build on, and reusing them is what keeps
+a new sign cheap:
+
+  _shape_held(key)      the handshape persisted across the window
+  _strokes(values)      a 1-D path split into direction runs, jitter ignored
+  hand_travel(axis)     how far the whole hand actually went
+
+hand_travel() is the one to reach for first. A sign that involves real
+movement should require the hand to have moved; without that, any handshape
+which happens to satisfy the shape test fires on landmark noise alone, which
+is exactly how a held Q came to emit Z (see _is_z). Add per-sign thresholds
+as constructor arguments -- named per sign, like z_travel -- rather than
+tightening a shared one, since tightening a shared threshold to fix one sign
+silently changes every other.
+
+Two hands
+---------
+This class holds no module-level or class-level mutable state: the buffer and
+every threshold are per-instance. So two-handed tracking means one
+MotionDetector per tracked hand, fed that hand's landmarks, rather than any
+change in here. What it does *not* give you is a two-handed sign -- a
+predicate over the relationship between two hands needs a layer above this
+that owns both detectors and can see both buffers. main.py would also need
+num_hands=2 and a way to keep each hand's identity stable across frames,
+which is the real work.
+
+Cost
+----
+Every rule here is O(buffer) over a few dozen samples of plain Python floats,
+with no allocation per frame beyond one dict, and no dependency outside the
+standard library. That is deliberate: this file has to keep up on whatever
+the glasses end up running.
 """
 from collections import deque
 import math
@@ -27,7 +63,7 @@ PINKY_PIP, PINKY_TIP = 18, 20
 class MotionDetector:
     def __init__(self, window_ms=650, min_samples=8, shape_ratio=0.7,
                  j_drop=0.5, j_hook=0.25,
-                 z_stroke=0.25, z_drop=0.3, deadband=0.08):
+                 z_stroke=0.25, z_drop=0.3, z_travel=0.3, deadband=0.08):
         self.window_ms = window_ms       # how much real time a gesture attempt spans
         self.min_samples = min_samples   # floor so a low-fps device can't fire on 2-3 noisy points
         self.shape_ratio = shape_ratio   # fraction of samples that must hold the handshape
@@ -35,6 +71,7 @@ class MotionDetector:
         self.j_hook = j_hook             # ...then move sideways this far in the final third
         self.z_stroke = z_stroke         # each Z stroke must be at least this long
         self.z_drop = z_drop             # net downward drift across the Z
+        self.z_travel = z_travel         # whole hand must cross this much (hand widths)
         self.deadband = deadband         # ignore horizontal jitter smaller than this
         self.buffer = deque()            # pruned by time, not maxlen
 
@@ -107,6 +144,30 @@ class MotionDetector:
         moved = math.hypot(x1 - x0, y1 - y0)
         return moved > self.deadband
 
+    # ── whole-hand motion primitive ─────────────────────────────────────
+    def hand_travel(self, axis=0, lookback_ms=None):
+        """How far the whole hand has moved across the window, in hand widths.
+
+        Measured on the centroid of all 21 landmarks, which is the point of
+        this: per-landmark jitter largely cancels in the average, while a real
+        translation of the hand survives it intact. A single fingertip cannot
+        tell those apart -- an occluded, wobbling fingertip traces the same
+        oscillation as a small deliberate stroke.
+
+        This is the primitive that separates "the hand went somewhere" from
+        "the fingers wobbled in place", so any future motion sign should gate
+        on it rather than re-deriving the idea. axis=0 is horizontal, axis=1
+        vertical; pass lookback_ms to measure only the recent tail.
+        """
+        if not self.buffer:
+            return 0.0
+        frames = self.buffer
+        if lookback_ms is not None:
+            cutoff = self.buffer[-1]["t"] - lookback_ms
+            frames = [f for f in self.buffer if f["t"] >= cutoff]
+        vals = [f["centroid"][axis] for f in frames]
+        return max(vals) - min(vals)
+
     # ── handshape rules (frame-independent — unchanged) ─────────────────
     @staticmethod
     def _extended(pts, tip, pip):
@@ -148,8 +209,27 @@ class MotionDetector:
         return dropped and hooked
 
     def _is_z(self):
-        """Pointing handshape, index tip zigzags: three alternating strokes."""
+        """Pointing handshape, index tip zigzags: three alternating strokes,
+        and the whole hand actually crosses the frame while doing it.
+
+        The travel gate is what stops a *stationary* pointing hand from firing.
+        Q is a pointing handshape by this module's test (it passes
+        _is_point_shape on 84% of the recorded Q samples), so holding a Q
+        palm-toward-camera puts the Z rules under continuous evaluation. With
+        the palm forward the curled fingers are self-occluded, MediaPipe's
+        estimate of them wobbles, and a fingertip oscillating in place can
+        satisfy "three alternating strokes" by chance -- observed live as a
+        held Q emitting Z repeatedly, which also erased the correct Q because
+        commit_motion() drops static commits inside the gesture span.
+
+        A hand that has not gone anywhere has not signed a motion letter,
+        whatever its fingertips did. That holds regardless of how noisy the
+        landmarks are, which is why this is a gate rather than a threshold
+        tweak -- retuning z_stroke would only move the noise floor.
+        """
         if not self._shape_held("point_shape"):
+            return False
+        if self.hand_travel(axis=0) < self.z_travel:
             return False
         xs = [f["index"][0] for f in self.buffer]
         ys = [f["index"][1] for f in self.buffer]
@@ -212,4 +292,5 @@ class MotionDetector:
             "j_hook": round(j_hooked, 3),       # need > self.j_hook
             "z_strokes": len(strokes),          # need 3, alternating
             "z_drift": round(z_drift, 3),       # need > self.z_drop
+            "hand_travel": round(self.hand_travel(axis=0), 3),  # need > self.z_travel
         }

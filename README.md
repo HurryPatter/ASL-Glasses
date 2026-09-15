@@ -177,12 +177,13 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `collect_data.py` | Labeled landmark data collection |
 | `train_classifier.py` | MLP training + per-class metrics |
 | `evaluate.py` | End-to-end accuracy benchmark |
-| `motion.py` | J/Z trajectory detection |
+| `motion.py` | J/Z trajectory detection (needs ~15fps, see `NOTES.md`) |
 | `debouncer.py` | One commit per letter run (wall-clock timed) |
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Windows TTS output |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `test_dataset.py` | Offline schema/grouping tests |
+| `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
