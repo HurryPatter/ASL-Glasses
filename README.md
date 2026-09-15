@@ -57,7 +57,7 @@ on Linux/macOS everything else works, but speech output will not.
 | `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak · `d` motion debug readout |
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
 | `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
-| `python evaluate.py` | Accuracy benchmark against known target letters → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |
+| `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing and under what condition → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |
 
 `collect_data.py` asks who is signing and **appends** (never overwrites), so data
 from multiple people accumulates.
@@ -75,8 +75,11 @@ per person** and then move on to the next person. While recording, move the hand
 slowly — rotate it, shift it, change distance. A frozen pose produces hundreds
 of near-identical rows; the same time spent moving produces far more variety.
 
-`evaluate.py` is the real accuracy number, distinct from the training/validation
-split printed by `train_classifier.py`: it runs the *whole* live pipeline
+`evaluate.py` records **both the signer and the condition on every row**, so a
+run spanning several people and several environments can be split by either
+afterwards — one label for the whole run cannot tell "this person struggles"
+from "this lighting is hard". It is the real accuracy number, distinct from the
+training/validation split printed by `train_classifier.py`: it runs the *whole* live pipeline
 (motion detection, debouncing and all) against a known target. Always label the
 run with its condition (background / lighting / person) when prompted — results
 accumulate across runs so conditions stay comparable.

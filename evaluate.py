@@ -57,8 +57,48 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
     return local.flatten()
 
 
+RESULTS_HEADER = ["person", "condition", "expected", "committed", "correct"]
+LEGACY_RESULTS_HEADER = ["condition", "expected", "committed", "correct"]
+
+
+def ask(prompt, default):
+    value = input(prompt).strip().lower()
+    return value or default
+
+
+def open_results():
+    """Append to eval_results.csv, migrating the pre-`person` header if needed.
+
+    Without `person`, a run across several people and several environments
+    cannot separate the two effects afterwards -- which is the whole point of
+    running it. Existing rows are marked `unknown` rather than attributed.
+    """
+    if os.path.exists(RESULTS_PATH):
+        with open(RESULTS_PATH, newline="") as fh:
+            rows = list(csv.reader(fh))
+        if rows and rows[0] == LEGACY_RESULTS_HEADER:
+            with open(RESULTS_PATH, "w", newline="") as fh:
+                w = csv.writer(fh)
+                w.writerow(RESULTS_HEADER)
+                for r in rows[1:]:
+                    w.writerow(["unknown"] + r)
+            print(f"Migrated {len(rows)-1} existing rows in {RESULTS_PATH}: "
+                  f"they predate the `person` column and are marked 'unknown'.")
+        csv_file = open(RESULTS_PATH, "a", newline="")
+        return csv_file, csv.writer(csv_file)
+
+    csv_file = open(RESULTS_PATH, "a", newline="")
+    writer = csv.writer(csv_file)
+    writer.writerow(RESULTS_HEADER)
+    return csv_file, writer
+
+
 def main():
-    condition = input("Label this run (e.g. 'white_bg', 'dim_light', 'angled'): ").strip() or "unlabeled"
+    # Both are recorded per row so a multi-person, multi-environment run can
+    # be split by either afterwards. One label for the whole run cannot tell
+    # "this person struggles" from "this lighting is hard".
+    person = ask("Who is signing? (first name, e.g. omar): ", "unknown")
+    condition = ask("Condition? (e.g. 'outdoor_sun', 'indoor_white_bg'): ", "unlabeled")
 
     model = joblib.load(MODEL_PATH)
     with open(LABELS_PATH) as f:
@@ -79,11 +119,7 @@ def main():
     cap = cv2.VideoCapture(0)
     start_time = time.monotonic()
 
-    file_exists = os.path.exists(RESULTS_PATH)
-    csv_file = open(RESULTS_PATH, "a", newline="")
-    writer = csv.writer(csv_file)
-    if not file_exists:
-        writer.writerow(["condition", "expected", "committed", "correct"])
+    csv_file, writer = open_results()
 
     results = []  # (expected, committed, correct) for this run's summary
 
@@ -147,7 +183,7 @@ def main():
                 committed = debouncer.confirmed_string[baseline_len:]
                 correct = target in committed
                 results.append((target, committed, correct))
-                writer.writerow([condition, target, committed, correct])
+                writer.writerow([person, condition, target, committed, correct])
                 csv_file.flush()
                 print(f"  {target}: got '{committed}' -> {'OK' if correct else 'MISS'}")
                 capturing = False
@@ -168,7 +204,7 @@ def main():
             break
         elif key == ord('n') and not capturing:
             results.append((target, "", False))
-            writer.writerow([condition, target, "", False])
+            writer.writerow([person, condition, target, "", False])
             letter_idx += 1
         elif key == ord(' ') and not capturing:
             capturing = True
@@ -184,7 +220,7 @@ def main():
     # ── This run's summary ───────────────────────────────────────────────
     if results:
         n_correct = sum(1 for _, _, ok in results if ok)
-        print(f"\n{condition}: {n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
+        print(f"\n{person} / {condition}: {n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
         misses = [(t, c) for t, c, ok in results if not ok]
         if misses:
             print("Missed:", ", ".join(f"{t}->'{c}'" for t, c in misses))
