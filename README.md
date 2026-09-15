@@ -54,7 +54,7 @@ on Linux/macOS everything else works, but speech output will not.
 
 | Command | What it does | Keys |
 | --- | --- | --- |
-| `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak current text |
+| `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak · `d` motion debug readout |
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
 | `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
 | `python evaluate.py` | Accuracy benchmark against known target letters → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |
@@ -177,12 +177,13 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `collect_data.py` | Labeled landmark data collection |
 | `train_classifier.py` | MLP training + per-class metrics |
 | `evaluate.py` | End-to-end accuracy benchmark |
-| `motion.py` | J/Z trajectory detection |
+| `motion.py` | J/Z trajectory detection (needs ~15fps, see `NOTES.md`) |
 | `debouncer.py` | One commit per letter run (wall-clock timed) |
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Windows TTS output |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `test_dataset.py` | Offline schema/grouping tests |
+| `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |

@@ -116,6 +116,55 @@ bug. Tightening it to exact-match once the fix is validated on camera would
 give a more defensible thesis number, and re-scoring the existing
 `eval_results.csv` under exact-match is a free before/after measurement.
 
+### FIXED: a held Q could emit Z repeatedly
+
+Observed live: holding Q with the palm toward the camera produced `Z Z Z Z`.
+With the back of the hand toward the camera it did not.
+
+Q is a pointing handshape by this module's test — 84% of the recorded Q
+samples pass `_is_point_shape` — so holding a Q puts the Z trajectory rules
+under continuous evaluation. Palm forward, the curled fingers are
+self-occluded, MediaPipe's estimate of them wobbles, and `_is_z()` measured the
+zigzag on the **index fingertip alone**, so a fingertip oscillating in place
+could satisfy "three alternating strokes" by chance. `_fire()` clears the
+buffer, so it re-armed and fired roughly 3-4 times a second.
+
+It also erased the correct answer: `commit_motion()` drops static commits made
+inside the gesture span, so the false Z deleted the Q that had been recognised
+properly. That is why the raw output showed `Z Z Z Z` and not `Q Z Z Z Z`.
+
+The fix is a gate, not a threshold tweak: `_is_z()` now also requires the
+**whole hand** to have travelled `z_travel` (0.3 hand widths) horizontally,
+measured on the centroid of all 21 landmarks via the new
+`MotionDetector.hand_travel()`. Averaging 21 landmarks cancels most
+per-landmark jitter while a real translation survives, so it separates "the
+hand went somewhere" from "the fingers wobbled in place". A hand that has not
+moved has not signed a motion letter, however noisy its landmarks — retuning
+`z_stroke` would only have moved the noise floor.
+
+`debug_info()` now reports `hand_travel`, and `main.py` can finally show it: press **D** for the readout. It had been dead code -- computed every frame, never called anywhere -- so none of these thresholds could be tuned against a real hand.
+
+**This was already intermittent before the fix** — it stopped reproducing
+after an unrelated retrain, which cannot have affected it: `motion.py` never
+consults the model, and `motion_detector.update()` runs at `main.py:116`,
+before any `predict_proba` call. The jitter that triggered it depends on
+lighting, hand angle and distance, so absence of the symptom was never
+evidence of a fix.
+
+### Motion signs need about 11fps at all (constrains the hardware choice)
+
+`min_samples` (8) has to be met *inside* `window_ms` (650ms), so the camera
+must deliver 8 samples within 650ms: `(8-1)*1000/650` — about **10.8fps**.
+Below that the buffer is pruned by time before it ever fills, and **no J or Z
+can fire however the gesture is performed**. Verified in `test_motion.py`:
+fires at 30 and 15fps, never at 10.
+
+This is a floor on the embedded target, not a tuning preference. Whatever
+hardware is chosen has to sustain ~15fps of MediaPipe inference with headroom,
+or the motion letters stop existing — and lowering `min_samples` to
+compensate buys noise, since the floor is there to stop 2-3 samples firing a
+gesture.
+
 ### Z occasionally never fires (read as X instead)
 
 Seen in the `white_bg_dim` run: expected `Z`, committed `XX`. In the earlier
@@ -147,7 +196,9 @@ def __init__(self, window_ms=650, z_window_ms=1200, ...):
 
 ...then have `_is_z()` evaluate over the full buffer while `_is_j()` keeps
 looking only at the trailing `window_ms`, and prune at `max(window_ms,
-z_window_ms)`. Instrument first: `debug_info()` already reports `z_strokes` and
+z_window_ms)`. The travel gate above should land first and has: widening the
+window increases false-positive exposure, which is exactly what the gate
+bounds. Instrument first: `debug_info()` already reports `z_strokes` and
 `z_drift` live, so watch those while signing Z to confirm the stroke count is
 what is actually falling short before changing thresholds.
 
@@ -222,7 +273,8 @@ would give up the "fully on-device" result. Needs to be locked down soon.
 2. Retrain on the combined dataset.
 3. More `evaluate.py` rounds across people and conditions, to build a
    defensible accuracy number and to settle whether G/Q is real.
-4. Instrument and fix the Z window (above).
+4. Instrument and fix the Z window (above) — now safer, since the travel
+   gate bounds the false positives that widening the window would invite.
 5. Validate the debouncer fix on camera — specifically the "LL" in HELLO,
    which now needs a bounce longer than `blank_ms` (250ms). If doubles are
    hard to produce, lower `blank_ms`; if single holds still repeat, raise it.
