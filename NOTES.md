@@ -110,7 +110,7 @@ fires on six static letters, and the debouncer now absorbs the consequences
 rather than removing the cause. Raising `deadband` or requiring sustained
 directional motion would cut the blank frames at the source.
 
-**`evaluate.py` scores `target in committed`** (line 148), a substring test, so
+**`evaluate.py` scores `target in committed`**, a substring test, so
 `QQQQQQQQQQ` counted as correct. The 96.2% figure is blind to this class of
 bug. Tightening it to exact-match once the fix is validated on camera would
 give a more defensible thesis number, and re-scoring the existing
