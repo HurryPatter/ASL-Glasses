@@ -224,6 +224,7 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `gloss.py` | ASL gloss → English (Veronica stage 7, stdlib only) |
 | `segment.py` | Continuous sign segmentation (Veronica stage 6, stdlib only) |
 | `capture.py` | The single MediaPipe adapter seam (Veronica) |
+| `config.py` | Persisted capture conventions (Veronica, stdlib only) |
 | `demo_veronica.py` | Live Veronica pipeline — runs without a trained model |
 | `check_setup.py` | Preflight: deps, models, camera fps, handedness convention |
 | `test_hands.py` | Offline feature-layer tests (no camera needed) |

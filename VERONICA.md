@@ -74,18 +74,57 @@ Decisions worth knowing about:
   unseen class. It costs one negation.
 - **Standard library only**, like `dataset.py`, so all 38 tests run in CI.
 
-### One hazard to watch, because nothing downstream can detect it
+### The mirror hazard — found on real hardware, now settled and recoverable
 
-MediaPipe labels handedness assuming a **mirrored** frame. `main.py` does
-`cv2.flip(frame, 1)`, so that holds today.
+MediaPipe reports handedness relative to an assumed mirroring of the input.
+**On this project's actual dev machine that assumption runs the opposite way to
+what the code assumed**: `check_setup.py` reported `Left` on 100% of frames for
+a raised right hand. Caught before any clip was collected, which is the entire
+reason the check exists.
 
-It will not hold on the glasses. The dev setup has the signer looking at a
-mirrored preview of themselves; the deployed glasses see a *different person,
-facing the wearer*. Those two geometries are reflections of each other. Get the
-convention wrong and every left hand is labelled right — trained on happily,
-silently, and wrong. `assign_hands(mirrored_input=...)` makes it one explicit
-flag instead of an assumption buried in three files. **Verify it on camera
-before stage 4**, by signing with one hand and checking the label.
+It cannot be settled by reading code. It depends on the MediaPipe build *and*
+on the camera, since some webcams deliver an already-mirrored feed that
+`cv2.flip` then un-mirrors. So the check reports **two** facts, not one:
+
+1. **what MediaPipe called the hand**, and
+2. **which side of the frame the hand appeared on** — the person says which
+   hand they raised, so this says whether the feed is actually mirrored.
+
+Reporting only (1) is what made the first version of this check ambiguous.
+Together they separate the two root causes, which matters on the glasses where
+the camera changes.
+
+Three things make it survivable rather than fatal:
+
+- **It is a setting, not a default.** `config.py` persists it to
+  `veronica_config.json`; `collect_signs.py` and `demo_veronica.py` both read
+  it. `python check_setup.py --set-mirrored-input false` writes it once.
+- **Every clip records the convention it was collected under.** Mixed archives
+  are detected and reported.
+- **A whole archive collected under the wrong convention is repairable.**
+  `python rebuild_signs.py --mirrored-input true` re-derives every training row
+  from the raw landmarks. Demonstrated end to end: 24/24 rows corrected, nobody
+  signs again. This is the payoff for archiving raw landmarks rather than
+  features.
+
+### MediaPipe's handedness also flips mid-clip
+
+A second finding from the same machine: the per-frame label is **not stable**.
+It flips, most readily when a hand rotates so the palm turns away from the
+camera — which ASL does constantly, since orientation is one of the five
+parameters a sign is built from.
+
+Trusting the per-frame label lets a hand change identity *mid-sign*. In a
+two-handed sign that swaps the dominant and non-dominant blocks partway through
+the clip, and the resulting feature vector describes a sign nobody made.
+
+So identity is resolved **over the whole clip**: hands are followed by position
+and each track takes the majority label of its own frames. Following position
+rather than side-of-frame is deliberate — hands cross in ASL, and "the right
+hand is the one further right" breaks exactly when they do.
+
+`handedness_stability` is recorded per clip, so unstable recordings are
+findable rather than silently averaged in.
 
 ## Stage 2 — Location: anchoring signs to the body ✅ **done**
 
@@ -533,11 +572,17 @@ themselves when they are wrong:
   below 11fps. That floor is derived twice over — from `motion.py`'s window in
   `NOTES.md`, and independently from `SignBuffer.min_samples`. Below it, no
   clip can be assembled and no motion letter can fire.
-- **The handedness convention.** It asks you to hold up your right hand and
-  reports what MediaPipe called it. If that comes back `Left`, every hand in
-  your dataset would be labelled backwards, trained on happily, with features
-  that stay entirely plausible. The fix is one flag
-  (`mirrored_input=False`), and it is much cheaper now than after a session.
+- **The handedness convention.** It asks you to hold up your right hand, then
+  reports both what MediaPipe called it *and* which side of the frame it was
+  on. If the label is inverted, every hand in your dataset would be labelled
+  backwards, trained on happily, with features that stay entirely plausible.
+
+  **This has already happened on the dev machine** — it reported `Left` for a
+  right hand. Fix it once, for every tool:
+
+  ```bash
+  python check_setup.py --set-mirrored-input false
+  ```
 
 ### 2. Watch the layers run
 
@@ -565,7 +610,7 @@ python train_signs.py              # once two people have signed the same signs
 | Check | Expect |
 | --- | --- |
 | `check_setup.py` | all pass; fps comfortably above 15 |
-| Right hand raised | reported as `Right` |
+| Right hand raised | `Handedness convention` passes (set the flag if not) |
 | Both hands up | `hands: 2` in the demo HUD |
 | Face in frame | green box, `face: yes` |
 | Hand at forehead vs chin | the zone in the `D` readout changes |

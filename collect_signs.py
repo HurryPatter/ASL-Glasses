@@ -48,6 +48,7 @@ import time
 import cv2
 
 import capture
+import config
 import hands
 import location
 import sequence
@@ -149,7 +150,8 @@ def draw(frame, detected, face_box, state):
                 (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
 
-def draw_readout(frame, detected, face_box, dominant_hand, frame_w, frame_h):
+def draw_readout(frame, detected, face_box, dominant_hand, frame_w, frame_h,
+                 mirrored_input=True):
     """Live feature values, so the layers can be checked against a real hand.
 
     Same reasoning as MotionDetector.debug_info(): the mirror convention and
@@ -160,9 +162,15 @@ def draw_readout(frame, detected, face_box, dominant_hand, frame_w, frame_h):
     confirm it says so.
     """
     dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
-                                   signer_dominant=dominant_hand)
+                                   signer_dominant=dominant_hand,
+                                   mirrored_input=mirrored_input)
 
-    lines = [f"raw handedness: {[label for _, label in detected] or '-'}",
+    # Both the raw label and what it resolves to, because the raw label alone
+    # is what made this ambiguous: a colour on screen says nothing about
+    # whether the convention is right.
+    raw = [label for _, label in detected] or ["-"]
+    lines = [f"raw handedness: {raw}   "
+             f"(mirrored_input={mirrored_input})",
              f"dominant hand tracked: {'yes' if dom is not None else 'no'}",
              f"non-dominant tracked:  {'yes' if non is not None else 'no'}"]
     for key, value in location.debug_info(hands.anchor(dom), hands.anchor(non),
@@ -181,7 +189,17 @@ def main():
     parser.add_argument("--no-face", action="store_true",
                         help="collect without location features (rarely what you want)")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--mirrored-input", choices=["true", "false"],
+                        help="override the stored handedness convention")
     args = parser.parse_args()
+
+    # The convention decides which physical hand becomes the dominant block.
+    # It is read from the config rather than assumed, because check_setup.py
+    # is the only thing that can establish it -- against a real hand, on this
+    # camera. See config.py.
+    mirrored = config.mirrored_input()
+    if args.mirrored_input:
+        mirrored = args.mirrored_input == "true"
 
     if not os.path.exists(HAND_MODEL):
         sys.exit(f"{HAND_MODEL} not found.")
@@ -246,6 +264,7 @@ def main():
     csv_file.flush()
 
     print(f"\nReady -- {person}, {dominant_hand.lower()}-dominant.")
+    print(f"Convention: {config.describe({'mirrored_input': mirrored})}")
     print(f"{len(labels)} signs. Aim for ~{SUGGESTED_CLIPS} clips each, then "
           f"recruit the next person.")
     print("Press F and check the reported handedness matches your real hand "
@@ -279,7 +298,7 @@ def main():
             draw(frame, detected, face_box, state)
             if show_readout:
                 draw_readout(frame, detected, face_box, dominant_hand,
-                             frame_w, frame_h)
+                             frame_w, frame_h, mirrored)
             cv2.imshow("Veronica -- sign collection", frame)
 
             key = cv2.waitKey(1) & 0xFF
@@ -298,7 +317,8 @@ def main():
                     clip = signset.raw_clip(
                         f"{person}-{session}-{state['total_clips'] + 1}",
                         state["label"], person, dominant_hand,
-                        frame_w, frame_h, clip_frames)
+                        frame_w, frame_h, clip_frames,
+                        mirrored_input=mirrored)
                     saved, note, colour = save_clip(
                         clip, clips_file, csv_file, undo_stack)
                     if saved:

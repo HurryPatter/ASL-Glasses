@@ -34,7 +34,9 @@ dropping it — that is the one file that cannot be regenerated.
 """
 import csv
 import json
+import math
 
+import config
 import hands
 import location
 import sequence
@@ -85,8 +87,8 @@ SIGNS = [sign for group in VOCABULARY.values() for sign in group]
 # Metadata, not features. `clip_id` is what lets a suspicious training row be
 # traced back to the exact clip in the archive -- without it, a class that
 # trains badly is a mystery rather than a recording to go and look at.
-META_COLUMNS = ["clip_id", "label", "person", "dominant",
-                "n_frames", "clip_ms", "face_coverage"]
+META_COLUMNS = ["clip_id", "label", "person", "dominant", "mirrored_input",
+                "n_frames", "clip_ms", "face_coverage", "handedness_stability"]
 HEADER = META_COLUMNS + sequence.SIGN_COLUMNS
 
 # Below this, the clip has no usable location data for most of its span, so
@@ -94,6 +96,11 @@ HEADER = META_COLUMNS + sequence.SIGN_COLUMNS
 # dropped -- filtering later is easy, and losing a good take is not -- but
 # flagged at collection time, while re-recording still costs seconds.
 MIN_FACE_COVERAGE = 0.5
+
+# Below this, MediaPipe disagreed with itself about which hand it was looking
+# at for a good part of the clip. Stabilisation repairs the identity, but a
+# clip this unstable usually also has poor tracking underneath it.
+MIN_HANDEDNESS_STABILITY = 0.8
 
 _COORD_PLACES = 4      # ~0.06px on a 640px frame; far finer than the tracker
 
@@ -121,12 +128,27 @@ def raw_frame(detected, face_box, timestamp_ms):
     }
 
 
-def raw_clip(clip_id, label, person, dominant, frame_w, frame_h, frames):
+def raw_clip(clip_id, label, person, dominant, frame_w, frame_h, frames,
+             mirrored_input=True):
+    """One archived clip.
+
+    `mirrored_input` is stored per clip rather than assumed, because it cannot
+    be settled by reading code -- it depends on the MediaPipe build and on the
+    camera, some of which deliver an already-mirrored feed. A wrong value
+    labels every left hand right, undetectably.
+
+    Storing it is what makes that recoverable. If the convention is later found
+    to have been wrong, `rebuild_signs.py --mirrored-input` re-derives every
+    training row from these raw landmarks under the corrected one, and nobody
+    signs anything twice. Clips recorded before this field existed default to
+    True, which is what they were collected under.
+    """
     return {
         "clip_id": clip_id,
         "label": label,
         "person": person,
         "dominant": dominant,
+        "mirrored_input": bool(mirrored_input),
         "frame_w": int(frame_w),
         "frame_h": int(frame_h),
         "frames": frames,
@@ -148,19 +170,119 @@ def read_clips(path):
                 yield json.loads(line)
 
 
+# ── hand identity across a clip ────────────────────────────────────────────
+# MediaPipe's per-frame handedness is not stable. It flips, most readily when a
+# hand rotates so the palm turns away from the camera -- which ASL does
+# constantly, since orientation is one of the five parameters a sign is built
+# from. Observed directly on this project's own recordings.
+#
+# Trusting the per-frame label means a hand can change identity *mid-sign*. In
+# a two-handed sign that swaps the dominant and non-dominant blocks partway
+# through the clip, and the resulting feature vector describes a sign nobody
+# made. So identity is resolved over the whole clip instead: hands are followed
+# by position, and each track takes the majority label of its own frames.
+#
+# Following position rather than side-of-image is deliberate. Hands cross in
+# ASL, and a rule like "the right hand is the one further right" breaks exactly
+# when they do; continuity follows the hand through the crossing.
+_MATCH_RADIUS = 0.25       # normalized image units between consecutive frames
+
+
+def _wrist(hand):
+    return hand["points"][hands.WRIST]
+
+
+def _track_hands(frames):
+    """-> (tracks, assignment), where assignment[i][j] is frame i hand j's track."""
+    tracks = []            # each: {"last": (x, y), "labels": [...]}
+    assignment = []
+
+    for frame in frames:
+        detections = frame.get("hands", [])
+        taken = {}
+        for index, hand in enumerate(detections):
+            x, y = _wrist(hand)
+            best, best_distance = None, _MATCH_RADIUS
+            for track_index, track in enumerate(tracks):
+                if track_index in taken.values():
+                    continue
+                tx, ty = track["last"]
+                distance = math.hypot(x - tx, y - ty)
+                if distance < best_distance:
+                    best, best_distance = track_index, distance
+            if best is None:
+                tracks.append({"last": (x, y), "labels": []})
+                best = len(tracks) - 1
+            taken[index] = best
+            tracks[best]["last"] = (x, y)
+            tracks[best]["labels"].append(hand.get("label"))
+        assignment.append(taken)
+
+    return tracks, assignment
+
+
+def _majority(labels):
+    present = [l for l in labels if l]
+    if not present:
+        return None
+    return max(set(present), key=present.count)
+
+
+def stabilized_frames(clip):
+    """The clip's frames with each hand's label replaced by its track's majority.
+
+    Returns (frames, stability) where stability is the fraction of labelled
+    detections that already agreed with their track -- 1.0 means MediaPipe
+    never flipped, and a low value marks a clip worth looking at.
+    """
+    frames = clip.get("frames") or []
+    tracks, assignment = _track_hands(frames)
+    resolved = [_majority(track["labels"]) for track in tracks]
+
+    agreed = total = 0
+    out = []
+    for frame, taken in zip(frames, assignment):
+        rebuilt = []
+        for index, hand in enumerate(frame.get("hands", [])):
+            track_index = taken.get(index)
+            label = resolved[track_index] if track_index is not None else hand.get("label")
+            if hand.get("label"):
+                total += 1
+                agreed += int(hand["label"] == label)
+            rebuilt.append({"label": label, "points": hand["points"]})
+        copy = dict(frame)
+        copy["hands"] = rebuilt
+        out.append(copy)
+
+    return out, (agreed / total if total else 1.0)
+
+
+def handedness_stability(clip):
+    return stabilized_frames(clip)[1]
+
+
 # ── reconstruction: archive -> training row ────────────────────────────────
-def clip_to_samples(clip):
+def clip_to_samples(clip, mirrored_input=None):
     """Rebuild the per-frame Sample stream from an archived clip.
 
     The one function that has to stay correct forever: every training row the
     project ever produces passes through it, and it is the only thing standing
     between the archive and needing the signers back.
+
+    `mirrored_input` overrides what the clip recorded, which is how a whole
+    archive collected under a wrong convention gets corrected without anyone
+    signing again.
     """
     frame_w, frame_h = clip["frame_w"], clip["frame_h"]
     dominant_hand = clip.get("dominant", hands.RIGHT)
+    if mirrored_input is None:
+        # Clips predating the field were collected under the old default.
+        mirrored_input = clip.get("mirrored_input", True)
+
+    frames, _ = stabilized_frames(clip)
 
     samples = []
-    for frame in clip["frames"]:
+    for frame in frames:
         detected = [
             ([(x * frame_w, y * frame_h) for x, y in hand["points"]],
              hand.get("label"))
@@ -173,7 +295,8 @@ def clip_to_samples(clip):
         # canonical_scene, never assign_hands directly: it is what keeps the
         # hands and the face reflected together for a left-dominant signer.
         dom, non, face = hands.canonical_scene(
-            detected, face, signer_dominant=dominant_hand)
+            detected, face, signer_dominant=dominant_hand,
+            mirrored_input=mirrored_input)
 
         samples.append(sequence.Sample(
             frame["t"],
@@ -198,17 +321,21 @@ def clip_span_ms(clip):
     return frames[-1]["t"] - frames[0]["t"]
 
 
-def clip_to_row(clip):
+def clip_to_row(clip, mirrored_input=None):
     """An archived clip -> one CSV training row."""
-    samples = clip_to_samples(clip)
+    samples = clip_to_samples(clip, mirrored_input=mirrored_input)
+    used = mirrored_input if mirrored_input is not None \
+        else clip.get("mirrored_input", True)
     return [
         clip["clip_id"],
         clip["label"],
         clip["person"],
         clip.get("dominant", hands.RIGHT),
+        bool(used),
         len(clip.get("frames") or []),
         clip_span_ms(clip),
         round(face_coverage(clip), 4),
+        round(handedness_stability(clip), 4),
     ] + sequence.sign_vector(samples)
 
 

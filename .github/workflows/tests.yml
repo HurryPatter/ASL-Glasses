@@ -7,10 +7,11 @@
 #
 # No pip install step on purpose -- the test modules import only debouncer.py,
 # dataset.py, motion.py, hands.py, location.py, sequence.py, signset.py,
-# folds.py, gloss.py and segment.py plus the standard library, so they need
-# neither MediaPipe nor scikit-learn and finish in seconds. capture.py is
+# folds.py, gloss.py, segment.py and config.py plus the standard library, so
+# they need neither MediaPipe nor scikit-learn and finish in seconds.
+# capture.py is
 # the single MediaPipe seam and is deliberately not imported by any of
-# them. Keeping those ten dependency-free is what keeps this job honest;
+# them. Keeping those eleven dependency-free is what keeps this job honest;
 # a numpy import in any of them silently turns this into a no-op.
 
 name: tests

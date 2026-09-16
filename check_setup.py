@@ -19,6 +19,8 @@ import subprocess
 import sys
 import time
 
+import config
+
 # Named here rather than imported, because this script has to run and report
 # useful failures on a machine where MediaPipe is not installed at all -- which
 # is exactly the state it exists to diagnose.
@@ -152,6 +154,7 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
     start = time.monotonic()
     frames = 0
     handedness = []
+    sides = []
     faces = 0
     two_handed = 0
 
@@ -170,6 +173,13 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
             if len(found) == 2:
                 two_handed += 1
             handedness += [label for _, label in found if label]
+            if len(found) == 1:
+                # Which side of the *displayed* frame the hand appeared on.
+                # This is the independent signal: the person says which hand
+                # they raised, so where it lands tells us whether the feed
+                # reaching MediaPipe is mirrored -- which is the difference
+                # between two root causes with different fixes.
+                sides.append(found[0][0][0][0])
         if detector.detect_for_video(image, timestamp_ms).detections:
             faces += 1
 
@@ -187,6 +197,7 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
         "fps": frames / elapsed if elapsed else 0.0,
         "frames": frames,
         "handedness": handedness,
+        "sides": sides,
         "faces": faces,
         "two_handed": two_handed,
     }
@@ -228,11 +239,22 @@ def check_face(stats):
 
 
 def check_handedness(stats):
-    """The hazard nothing downstream can detect.
+    """The hazard nothing downstream can detect, settled against a real hand.
 
-    MediaPipe labels handedness assuming a mirrored frame, which cv2.flip
-    satisfies. If that assumption is ever wrong, every left hand is labelled
-    right, trained on happily, and the features stay entirely plausible.
+    Two independent facts are needed, and reporting only the first is what
+    made the earlier version of this check ambiguous:
+
+      1. **What MediaPipe called the hand.** Its handedness is reported
+         relative to an assumed mirroring of the input.
+      2. **Which side of the displayed frame the hand appeared on.** The
+         person says they raised their right hand, so this says whether the
+         feed reaching MediaPipe is actually mirrored.
+
+    Together they separate two root causes that look identical from (1) alone:
+    a MediaPipe whose convention runs the other way, and a camera that already
+    delivers a mirrored feed which cv2.flip then un-mirrors. Either way the
+    fix is the same flag -- but only the pair tells you what you are looking
+    at, and the second matters on the glasses, where the camera changes.
     """
     labels = stats["handedness"]
     if not labels:
@@ -241,21 +263,64 @@ def check_handedness(stats):
 
     rights = labels.count("Right")
     ratio = rights / len(labels)
-    detail = f"reported '{'Right' if ratio > 0.5 else 'Left'}' on "
-    detail += f"{max(ratio, 1 - ratio):.0%} of frames"
+    reported = "Right" if ratio > 0.5 else "Left"
+    agreement = max(ratio, 1 - ratio)
 
-    if ratio > 0.8:
-        return record(PASS, "Handedness convention", detail)
-    if ratio < 0.2:
-        return record(FAIL, "Handedness convention", detail,
-                      "INVERTED. You raised your right hand and MediaPipe called "
-                      "it left.\nEvery hand would be labelled backwards, and "
-                      "nothing downstream can\ndetect that. Pass "
-                      "mirrored_input=False to hands.assign_hands() and\n"
-                      "hands.canonical_scene() -- see VERONICA.md stage 1.")
-    return record(WARN, "Handedness convention", detail,
-                  "Mixed. Probably both hands were in frame, or tracking was "
-                  "unstable.\nRe-run with only your right hand raised.")
+    sides = stats.get("sides") or []
+    mean_x = sum(sides) / len(sides) if sides else None
+    if mean_x is None:
+        where = "unknown (needed exactly one hand in frame)"
+        view = None
+    elif mean_x > 0.5:
+        where = f"the RIGHT side of the frame (x={mean_x:.2f})"
+        view = "mirrored"
+    else:
+        where = f"the LEFT side of the frame (x={mean_x:.2f})"
+        view = "not mirrored"
+
+    detail = f"MediaPipe said '{reported}' on {agreement:.0%} of frames; "
+    detail += f"your hand was on {where}"
+
+    if agreement < 0.8:
+        return record(WARN, "Handedness convention", detail,
+                      "Mixed, which is itself a finding -- MediaPipe's label "
+                      "flips, most readily\nwhen the palm turns away. Clip "
+                      "reconstruction now resolves identity over a\nwhole clip "
+                      "rather than per frame, so this is handled, but re-run "
+                      "with\nonly your right hand raised to read the "
+                      "convention cleanly.")
+
+    if reported == "Right":
+        note = ""
+        if view == "not mirrored":
+            note = ("\nNote: your hand appeared on the left of the frame, so the "
+                    "feed is not\nmirrored -- the labels happen to come out "
+                    "right anyway. Re-check on the\nglasses, where the camera "
+                    "changes.")
+        record(PASS, "Handedness convention", detail, note)
+        return True
+
+    cause = ""
+    if view == "mirrored":
+        cause = ("The displayed feed IS mirrored -- your right hand is on the "
+                 "right --\nand MediaPipe still called it left, so its "
+                 "convention runs the\nopposite way on this build.")
+    elif view == "not mirrored":
+        cause = ("Your right hand appeared on the LEFT of the frame, so this "
+                 "camera\nalready delivers a mirrored feed and cv2.flip "
+                 "un-mirrors it. The\nfix is the same, but expect a different "
+                 "answer on other hardware.")
+
+    return record(FAIL, "Handedness convention", detail,
+                  f"INVERTED -- labels must be swapped.\n{cause}\n\n"
+                  f"Fix it once, for every tool:\n"
+                  f"    python check_setup.py --set-mirrored-input false\n"
+                  f"That writes {config.CONFIG_PATH}, which collect_signs.py and\n"
+                  f"demo_veronica.py both read. The value is also recorded into "
+                  f"every\nclip, so if it is ever wrong again "
+                  f"`python rebuild_signs.py --mirrored-input true`\n"
+                  f"re-derives every training row from the raw landmarks. "
+                  f"Nobody re-signs.")
 
 
 def check_two_hands(stats):
@@ -276,9 +341,20 @@ def main():
                         help="skip the interactive handedness check")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--seconds", type=float, default=4.0)
+    parser.add_argument("--set-mirrored-input", choices=["true", "false"],
+                        help="write the handedness convention to "
+                             f"{config.CONFIG_PATH} and exit")
     args = parser.parse_args()
 
+    if args.set_mirrored_input:
+        value = args.set_mirrored_input == "true"
+        saved = config.save({"mirrored_input": value})
+        print(f"Wrote {config.CONFIG_PATH}: {config.describe(saved)}")
+        print("collect_signs.py and demo_veronica.py now use this.")
+        sys.exit(0)
+
     print("Project Veronica -- setup check\n")
+    print(f"Convention: {config.describe()}\n")
     print("Offline")
     print("-" * 60)
     check_python()

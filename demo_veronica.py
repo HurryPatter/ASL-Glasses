@@ -28,6 +28,7 @@ import time
 import cv2
 
 import capture
+import config
 import gloss
 import hands
 import location
@@ -96,9 +97,12 @@ def draw_landmarks(frame, detected, face_box):
                       (120, 220, 120), 1)
 
 
-def draw_readout(frame, segmenter, dom, non, face, detected, fps):
+def draw_readout(frame, segmenter, dom, non, face, detected, fps,
+                 mirrored_input=True):
     lines = [f"fps: {fps:.1f}" + ("" if fps >= 11 else "   BELOW THE 11fps FLOOR"),
-             f"raw handedness: {[l for _, l in detected] or '-'}"]
+             f"raw handedness: {[l for _, l in detected] or '-'}   "
+             f"(mirrored_input={mirrored_input})",
+             f"dominant tracked: {'yes' if dom is not None else 'no'}"]
     for key, value in segmenter.debug_info().items():
         lines.append(f"{key}: {value}")
     for key, value in location.debug_info(hands.anchor(dom), hands.anchor(non),
@@ -119,7 +123,13 @@ def main():
     parser.add_argument("--no-face", action="store_true")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--confidence", type=float, default=0.70)
+    parser.add_argument("--mirrored-input", choices=["true", "false"],
+                        help="override the stored handedness convention")
     args = parser.parse_args()
+
+    mirrored = config.mirrored_input()
+    if args.mirrored_input:
+        mirrored = args.mirrored_input == "true"
 
     if not os.path.exists(capture.HAND_MODEL):
         sys.exit(f"{capture.HAND_MODEL} not found -- run from the repo root.")
@@ -151,6 +161,7 @@ def main():
         sys.exit(f"Could not open camera {args.camera}.")
 
     print(f"Veronica live -- {args.dominant}-dominant, {model_note}")
+    print(f"Convention: {config.describe({'mirrored_input': mirrored})}")
     print("Press D for the readout. Q to quit.")
 
     show_readout = not os.path.exists(MODEL_PATH)   # default on with no model
@@ -185,7 +196,8 @@ def main():
                     frame_w, frame_h)
 
             dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
-                                           signer_dominant=dominant_hand)
+                                           signer_dominant=dominant_hand,
+                                           mirrored_input=mirrored)
 
             if dom is None and non is None:
                 committed = segmenter.update(timestamp_ms)
@@ -203,7 +215,8 @@ def main():
             draw_hud(frame, segmenter, english, model_note,
                      len(detected), face_box)
             if show_readout:
-                draw_readout(frame, segmenter, dom, non, face, detected, fps)
+                draw_readout(frame, segmenter, dom, non, face, detected, fps,
+                             mirrored)
 
             cv2.imshow("Veronica -- live", frame)
 

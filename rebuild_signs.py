@@ -28,7 +28,14 @@ def main():
                         help="summarise the archive without writing the CSV")
     parser.add_argument("--clips", default=signset.CLIPS_PATH)
     parser.add_argument("--out", default=signset.SIGNS_PATH)
+    parser.add_argument("--mirrored-input", choices=["true", "false"],
+                        help="re-derive every row under this handedness "
+                             "convention, overriding what each clip recorded. "
+                             "This is the repair path for an archive collected "
+                             "under the wrong one -- nobody signs again.")
     args = parser.parse_args()
+    override = None if args.mirrored_input is None else (
+        args.mirrored_input == "true")
 
     if not os.path.exists(args.clips):
         sys.exit(f"{args.clips} not found -- nothing collected yet. "
@@ -40,10 +47,21 @@ def main():
 
     rows = []
     thin_face = []
+    unstable = []
     for clip in clips:
-        rows.append(signset.clip_to_row(clip))
+        rows.append(signset.clip_to_row(clip, mirrored_input=override))
         if signset.face_coverage(clip) < signset.MIN_FACE_COVERAGE:
             thin_face.append(clip["clip_id"])
+        if signset.handedness_stability(clip) < signset.MIN_HANDEDNESS_STABILITY:
+            unstable.append(clip["clip_id"])
+
+    if override is not None:
+        print(f"Overriding the recorded convention: mirrored_input={override}")
+    conventions = {c.get("mirrored_input", True) for c in clips}
+    if override is None and len(conventions) > 1:
+        print("\n  MIXED CONVENTIONS in the archive: clips were collected under\n"
+              "  both mirrored_input settings. Re-derive them all under one with\n"
+              "  `python rebuild_signs.py --mirrored-input true|false`.")
 
     counts = signset.counts_by_label(clips)
     everyone = signset.people(clips)
@@ -70,6 +88,13 @@ def main():
     if missing:
         print(f"\n  Never recorded ({len(missing)}): {', '.join(missing[:15])}"
               f"{' ...' if len(missing) > 15 else ''}")
+
+    if unstable:
+        print(f"\n  Unstable handedness ({len(unstable)}): MediaPipe disagreed "
+              f"with itself\n  about which hand it was seeing. Identity is "
+              f"resolved over the whole\n  clip, so these are usable, but the "
+              f"tracking underneath is poor.")
+        print(f"  {', '.join(unstable[:8])}{' ...' if len(unstable) > 8 else ''}")
 
     if thin_face:
         print(f"\n  Low face coverage ({len(thin_face)}): location features are "

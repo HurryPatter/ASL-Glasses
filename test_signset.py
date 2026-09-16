@@ -14,6 +14,7 @@ import os
 import tempfile
 import unittest
 
+import config
 import hands
 import location
 import sequence
@@ -44,7 +45,8 @@ FACE_BOX = [300 / FRAME_W, 60 / FRAME_H, 120 / FRAME_W, 160 / FRAME_H]
 
 
 def clip(label="HELLO", person="omar", dominant=hands.RIGHT, frames=12,
-         duration_ms=800, face=True, two_handed=True, mirror=False):
+         duration_ms=800, face=True, two_handed=True, mirror=False,
+         mirrored_input=True):
     """A synthetic archived clip of a hand travelling downward."""
     out = []
     for i in range(frames):
@@ -69,7 +71,8 @@ def clip(label="HELLO", person="omar", dominant=hands.RIGHT, frames=12,
         out.append(frame(specs, box, t))
 
     return signset.raw_clip("omar-1-1", label, person, dominant,
-                            FRAME_W, FRAME_H, out)
+                            FRAME_W, FRAME_H, out,
+                            mirrored_input=mirrored_input)
 
 
 def max_diff(a, b):
@@ -290,3 +293,134 @@ class TestCsvOutput(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHandednessConvention(unittest.TestCase):
+    """The setting that cannot be settled by reading code, only against a
+    real hand on a real camera -- so it is recorded rather than assumed."""
+
+    def test_clips_record_the_convention_they_were_collected_under(self):
+        self.assertTrue(clip()["mirrored_input"])
+        self.assertFalse(clip(mirrored_input=False)["mirrored_input"])
+
+    def test_row_carries_it_as_metadata(self):
+        row = dict(zip(signset.HEADER,
+                       signset.clip_to_row(clip(mirrored_input=False))))
+        self.assertEqual(row["mirrored_input"], False)
+
+    def test_clips_predating_the_field_default_to_the_old_behaviour(self):
+        old = clip()
+        del old["mirrored_input"]
+        # Must not raise, and must reproduce what it was collected under.
+        self.assertEqual(signset.clip_to_row(old)[:4],
+                         signset.clip_to_row(clip())[:4])
+
+    def test_the_convention_swaps_which_hand_is_dominant(self):
+        # The whole hazard in one assertion: the same landmarks, read under
+        # the two conventions, put different physical hands in the dominant
+        # block. Nothing downstream can tell -- both vectors are plausible.
+        as_reported = signset.clip_to_samples(clip(), mirrored_input=True)
+        swapped = signset.clip_to_samples(clip(), mirrored_input=False)
+        self.assertGreater(
+            max_diff(as_reported[0].features, swapped[0].features), 0.5)
+
+    def test_an_archive_collected_wrong_is_repairable_without_re_signing(self):
+        # The reason the archive stores raw landmarks at all. A whole
+        # collection made under the wrong convention is corrected by
+        # re-deriving, not by bringing the signers back.
+        correct = signset.clip_to_row(clip(mirrored_input=True))
+        collected_wrong = clip(mirrored_input=False)
+        repaired = signset.clip_to_row(collected_wrong, mirrored_input=True)
+
+        n = len(signset.META_COLUMNS)
+        self.assertLess(max_diff(correct[n:], repaired[n:]), 1e-9)
+        self.assertNotEqual(signset.clip_to_row(collected_wrong)[n:], correct[n:])
+
+
+class TestHandednessStability(unittest.TestCase):
+    """MediaPipe's per-frame label flips, most readily when a palm turns away.
+
+    Trusting it per frame lets a hand change identity mid-sign, which in a
+    two-handed sign swaps the dominant and non-dominant blocks partway through
+    and produces a feature vector describing a sign nobody made.
+    """
+
+    def flipped(self, at, label=hands.LEFT):
+        source = clip(two_handed=False)
+        for f in source["frames"][at:at + 3]:
+            f["hands"][0]["label"] = label
+        return source
+
+    def test_a_clean_clip_reports_full_stability(self):
+        self.assertEqual(signset.handedness_stability(clip()), 1.0)
+
+    def test_a_flip_is_detected(self):
+        self.assertLess(signset.handedness_stability(self.flipped(4)), 1.0)
+
+    def test_a_flip_is_corrected_by_clip_majority(self):
+        frames, _ = signset.stabilized_frames(self.flipped(4))
+        labels = {f["hands"][0]["label"] for f in frames if f["hands"]}
+        self.assertEqual(labels, {hands.RIGHT})
+
+    def test_correction_makes_the_features_match_the_clean_clip(self):
+        # The point: the repaired clip must be indistinguishable from one
+        # MediaPipe never got wrong.
+        clean = signset.clip_to_samples(clip(two_handed=False))
+        repaired = signset.clip_to_samples(self.flipped(4))
+        for a, b in zip(clean, repaired):
+            self.assertLess(max_diff(a.features, b.features), 1e-9)
+
+    def test_without_correction_the_flipped_frames_would_differ(self):
+        # The control, and the size of the damage: three frames out of twelve
+        # describing the other hand.
+        source = self.flipped(4)
+        raw = source["frames"][4]
+        detected = [([(x * FRAME_W, y * FRAME_H) for x, y in h["points"]],
+                     h["label"]) for h in raw["hands"]]
+        dom, non, _ = hands.canonical_scene(detected, None)
+        self.assertIsNone(dom)          # relabelled away from the dominant slot
+        self.assertIsNotNone(non)
+
+    def test_hands_are_followed_through_a_crossing(self):
+        # Hands cross in ASL, so identity must follow the hand rather than
+        # the side of the frame it happens to be on.
+        source = clip(two_handed=True)
+        stability = signset.handedness_stability(source)
+        self.assertGreaterEqual(stability, 0.9)
+
+    def test_stability_is_reported_as_metadata(self):
+        row = dict(zip(signset.HEADER, signset.clip_to_row(self.flipped(4))))
+        self.assertLess(row["handedness_stability"], 1.0)
+        self.assertGreater(row["handedness_stability"], 0.0)
+
+    def test_an_empty_clip_is_trivially_stable(self):
+        empty = signset.raw_clip("x", "A", "p", hands.RIGHT, 1, 1, [])
+        self.assertEqual(signset.handedness_stability(empty), 1.0)
+
+
+class TestConfigFile(unittest.TestCase):
+
+    def test_defaults_when_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "none.json")
+            self.assertEqual(config.load(path), config.DEFAULTS)
+
+    def test_round_trip(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.json")
+            config.save({"mirrored_input": False}, path)
+            self.assertFalse(config.load(path)["mirrored_input"])
+
+    def test_a_corrupt_config_does_not_stop_a_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.json")
+            with open(path, "w") as fh:
+                fh.write("{ not json")
+            self.assertEqual(config.load(path), config.DEFAULTS)
+
+    def test_unknown_keys_are_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "c.json")
+            with open(path, "w") as fh:
+                json.dump({"mirrored_input": False, "nonsense": 1}, fh)
+            self.assertEqual(config.load(path), {"mirrored_input": False})
