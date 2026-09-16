@@ -99,9 +99,31 @@ riad 0.665), so the others do not span her **and** she contributes variety
 nobody else does.
 
 Her within-label spread is also the highest (0.612, vs ~0.51 for omar and
-nourhan) — which reads as variety, not noise, given the above. Riad's is 0.264
-at ~108 rows per take, the signature of a held, frozen pose: good coverage, thin
-variety. Tell the next person to move their hand.
+nourhan) — which reads as variety, not noise, given the above.
+
+Riad's is 0.264, and the first guess — that he held a frozen pose — was wrong;
+he was moving throughout. The real cause is that **the movement being asked for
+did not reach the features.** `normalize_landmarks()` removes position,
+distance-from-camera and in-plane rotation exactly, so all three change the 42
+floats by about 1e-16:
+
+| Variation | Max feature change |
+| --- | --- |
+| Shifted 150px across the frame | 4e-16 |
+| Moved closer (1.6x) / further (0.5x) | ~1e-15 |
+| Rotated 25 / 90 / 200 degrees in-plane | ~1e-16 |
+| **Tilted out of the image plane** | **0.84** |
+| **Finger curled differently** | **0.80** |
+
+This is the same invariance that makes G and Q indistinguishable, seen from the
+data-collection side. Only **out-of-plane tilt** and **genuine handshape
+variation** produce new feature vectors; waving the hand around the frame
+produces duplicates however different the picture looks. Riad's takes were also
+shorter (~108 rows ~= 7s, against ~20s for the others), leaving less room for
+the drift that does count.
+
+The guidance in `collect_data.py` and `README.md` has been corrected
+accordingly. Tell the next person to **tilt the hand and vary finger curl**.
 
 The fix for a low outlier fold is **more different people**, each of which
 widens the space her hands sit inside. Re-recording her "more carefully" would

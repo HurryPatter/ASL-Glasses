@@ -75,10 +75,23 @@ More rows from people already in the set is worth nothing by comparison
 (4,352 → 14,509 rows from the same two people moved accuracy 80.2% → 80.4%).
 
 So aim for **~100 rows per label per person**, then move on to the next person.
-While recording, **move the hand slowly** — rotate it, shift it, change
-distance. A frozen pose produces hundreds of near-identical rows; the same time
-spent moving produces far more variety, and variety is what transfers to a new
-signer (see the note on outlier signers in `NOTES.md`).
+
+**What to vary while recording** — and this is counter-intuitive, because the
+normalization erases most of what looks like variation:
+
+| Variation | Effect on the 42 features |
+| --- | --- |
+| Moving the hand around the frame | **none** (~1e-16) |
+| Moving closer or further away | **none** |
+| Rotating it in the image plane | **none** |
+| **Tilting it toward / away from the camera** | real |
+| **Varying finger curl, thumb position** | real |
+
+The hand frame puts the origin at the wrist, scales by wrist->middle-knuckle and
+rotates the thumb onto +x, so position, distance and in-plane rotation are
+removed *by construction* — the same invariance that makes G and Q collapse
+together. So **tilt the hand and vary the handshape**; waving it around the
+frame produces duplicate feature vectors however different the picture looks.
 
 `evaluate.py` records **both the signer and the condition on every row**, so a
 run spanning several people and several environments can be split by either
