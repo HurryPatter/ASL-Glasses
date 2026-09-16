@@ -56,8 +56,8 @@ rather than a suggestion.
 
 `hands.py`, `test_hands.py`.
 
-A 100-float frame vector: two 46-float hand blocks plus an 8-float relational
-block. Recovers **orientation** (the parameter the hand frame discarded) and
+Two 46-float hand blocks plus an 8-float relational block — 100 floats, which
+stage 2 extends to 107. Recovers **orientation** (the parameter the hand frame discarded) and
 adds everything about a **second hand** — separation, relative rotation,
 relative size, and contact, all measured in hand-widths so they survive camera
 distance without a depth sensor or a body model.
@@ -87,34 +87,58 @@ silently, and wrong. `assign_hands(mirrored_input=...)` makes it one explicit
 flag instead of an assumption buried in three files. **Verify it on camera
 before stage 4**, by signing with one hand and checking the label.
 
-## Stage 2 — Location: anchoring signs to the body
+## Stage 2 — Location: anchoring signs to the body ✅ **done**
+
+`location.py`, `test_location.py`. Composed into the frame vector by
+`hands.feature_vector(dominant, nondominant, face)`, now **107 floats**.
 
 The parameter that cannot be recovered from hand landmarks at all. FATHER and
 MOTHER are the same handshape, the same orientation and the same movement; one
-is at the forehead and one is at the chin. Hand landmarks alone cannot tell
-them apart, ever.
+is at the forehead and one is at the chin. There is a test pinning exactly that
+down — the two produce *byte-identical* vectors without a body reference, and
+differ by more than a face-width with one.
 
-The decision to make is **what supplies the body reference**, and it is a real
-trade-off against the "lightweight, fully on-device" result:
+**The body reference is a face detector**, not a pose model. Most
+location-contrastive signs are head-anchored, the model is small, and it leaves
+the "fully on-device, lightweight" result intact — with the embedded target
+still undecided, a second full pose model per frame is headroom that is not
+free to spend. The deployment geometry cooperates: the glasses see the
+conversation partner, so the signer's face is in frame.
 
-| Option | Gives | Costs |
-| --- | --- | --- |
-| MediaPipe Pose / Holistic | shoulders, torso, full body frame | a second full model per frame |
-| **MediaPipe Face Detector** | face box → forehead / chin / neck / chest | a few ms; already the anchor most location contrasts use |
-| Nothing | — | stages 2, 7 and most of the lexicon |
+Decisions worth knowing about:
 
-**Recommendation: face detector.** Most location-contrastive signs are
-anchored to the head, the model is small, and it keeps the on-device story
-intact. Locations get expressed in face-widths, the same trick the relational
-block already uses for hand-widths — no depth, no calibration.
+- **Face *width* is the unit, not height or diagonal.** ASL uses head movement
+  grammatically, and pitching the head compresses a face box's apparent height
+  hard while leaving its width nearly alone. A height-based unit would move
+  every location feature by ~45% during exactly the constructions stage 8 has
+  to read. Both axes divide by that one number, so the frame stays isotropic
+  and an angle in it is a real angle.
+- **`hand size / face width` is a free depth proxy.** Both are fixed physical
+  sizes, so the ratio is roughly constant for a person *unless* the hand is
+  nearer the camera than the face — which is what a sign made out in neutral
+  space does, as against one contacting the body. That is a usable third
+  dimension out of two monocular measurements.
+- **Detector-agnostic.** A face is three numbers (centre and width); nothing in
+  `location.py` imports MediaPipe or knows what produced the box. So it is
+  testable in CI, and a better face model later is a change at the call site.
+  Landmark anchoring (eye and mouth keypoints, steadier than a box, and they
+  would also give head rotation) fits this interface unchanged.
+- **A lost face zeroes only the location block.** `face_present` leads it, so
+  "no face detected" stays distinguishable from "both hands at the centre of
+  the face", and the other 100 floats survive intact. Same distinction
+  `debouncer.py` had to make between absence of evidence and evidence of
+  absence.
 
-Note the deployment geometry helps here: the glasses see the conversation
-partner, so the signer's face is in frame. It would not be if the camera were
-egocentric on the signer.
+`zone_name()` and `debug_info()` name the region a hand is in — forehead,
+mouth/chin, neck/shoulder, chest — for an on-screen readout, in the same spirit
+as `MotionDetector.debug_info()`. They are **diagnostics, never features**: the
+cut points are a guess, and a hard-coded "chin" boundary that is slightly wrong
+is worse than letting the model learn where a chin falls.
 
-**Done when:** the frame vector carries each hand's position in a
-face-anchored frame, and it is stable as the signer moves toward and away from
-the camera. Same offline-test treatment as stage 1.
+**Still to do on camera:** the face detector itself is not wired into `main.py`
+yet — that happens with the stage 4 collection tool, since it is the first
+thing that needs a real face in a real frame. Obtaining the MediaPipe face
+detector model file is part of that step.
 
 ## Stage 3 — Movement: from frames to a sign
 
@@ -243,8 +267,8 @@ rough edge.
 | Stage | State |
 | --- | --- |
 | 1 — two hands, orientation | ✅ done, 38 offline tests |
-| 2 — location / body anchor | next; decide the face-vs-pose trade-off first |
-| 3 — movement | design settled, not built |
+| 2 — location / body anchor | ✅ done, 25 offline tests (face detector chosen) |
+| 3 — movement | next |
 | 4 — collection | 🔒 gated on 1–3 |
 | 5 — classifier | after 4 |
 | 6 — continuous signing | after 5 |

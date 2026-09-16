@@ -214,7 +214,9 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `hands.py` | Two-hand + orientation feature layer (Veronica stage 1, stdlib only) |
+| `location.py` | Face-anchored sign location (Veronica stage 2, stdlib only) |
 | `test_hands.py` | Offline feature-layer tests (no camera needed) |
+| `test_location.py` | Offline location-layer tests (no camera needed) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |

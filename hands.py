@@ -8,19 +8,21 @@ ASL sign:
 
     handshape    ✓ the existing 42 floats
     orientation  ✗ normalized away (this is the documented G/Q confusion)
-    location     ✗ normalized away (stage 2 — needs a body reference)
+    location     ✓ location.py, face-anchored (stage 2)
     movement     ✗ invisible to a single frame (stage 3)
     non-manuals  ✗ not a hand at all (stage 8)
 
 This module adds the two that are recoverable from hand landmarks alone —
-orientation, and everything about a *second* hand — and leaves the other three
-to their own stages. See VERONICA.md for why that order.
+orientation, and everything about a *second* hand — and assembles them with the
+face-anchored location block from `location.py` into the per-frame vector that
+stage 3 will consume. See VERONICA.md for why that order.
 
-Layout of the 100-float vector
-------------------------------
+Layout of the 107-float frame vector
+------------------------------------
     [  0: 46)  dominant hand block
     [ 46: 92)  non-dominant hand block
-    [ 92:100)  relational block
+    [ 92:100)  relational block      (how the hands stand to each other)
+    [100:107)  location block        (where they are on the body — location.py)
 
 A hand block is 46 floats:
 
@@ -71,6 +73,8 @@ run. It also has to keep up on whatever the glasses end up running.
 """
 import math
 
+import location
+
 # MediaPipe hand landmark indices
 WRIST = 0
 THUMB_MCP = 2
@@ -80,11 +84,14 @@ N_POINTS = 21
 SHAPE_FLOATS = 42
 PER_HAND_FLOATS = 46
 RELATIONAL_FLOATS = 8
-FEATURE_FLOATS = PER_HAND_FLOATS * 2 + RELATIONAL_FLOATS   # 100
+LOCATION_FLOATS = location.LOCATION_FLOATS                 # 7
+FEATURE_FLOATS = (PER_HAND_FLOATS * 2 + RELATIONAL_FLOATS
+                  + LOCATION_FLOATS)                       # 107
 
 DOMINANT_OFFSET = 0
 NONDOMINANT_OFFSET = PER_HAND_FLOATS
 RELATIONAL_OFFSET = PER_HAND_FLOATS * 2
+LOCATION_OFFSET = RELATIONAL_OFFSET + RELATIONAL_FLOATS
 
 RIGHT = "Right"
 LEFT = "Left"
@@ -224,11 +231,33 @@ def relational_block(dominant, nondominant):
     ]
 
 
-def feature_vector(dominant, nondominant):
-    """The 100-float Veronica frame vector. Either hand may be None."""
+def anchor(points):
+    """(wrist_xy, hand_size_px) — what location.py needs from a hand.
+
+    Passing this rather than the landmark list is what keeps location.py from
+    importing this module, so the two blocks stay independently testable.
+    """
+    if points is None:
+        return None
+    return points[WRIST], hand_frame(points)[4]
+
+
+def feature_vector(dominant, nondominant, face=None):
+    """The 107-float Veronica frame vector.
+
+    Either hand may be None, and so may `face` — a detector that loses the
+    signer's face for a few frames zeroes the location block rather than
+    invalidating the whole vector, because the other 100 floats are still
+    perfectly good. Each block leads with its own presence flag so partial
+    evidence stays distinguishable from evidence of absence, which is the same
+    distinction debouncer.py had to make to stop one held letter committing
+    ten times.
+    """
     dom = hand_block(dominant) if dominant is not None else absent_hand_block()
     non = hand_block(nondominant) if nondominant is not None else absent_hand_block()
-    return dom + non + relational_block(dominant, nondominant)
+    return (dom + non
+            + relational_block(dominant, nondominant)
+            + location.location_block(anchor(dominant), anchor(nondominant), face))
 
 
 # ── which hand is which ────────────────────────────────────────────────────
@@ -309,4 +338,5 @@ FEATURE_COLUMNS = (
     + _hand_columns("non")
     + ["rel_both_present", "rel_dx", "rel_dy", "rel_distance",
        "rel_size_ratio", "rel_cos", "rel_sin", "rel_contact"]
+    + location.LOCATION_COLUMNS
 )

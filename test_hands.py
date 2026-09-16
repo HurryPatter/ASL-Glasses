@@ -62,7 +62,10 @@ def max_diff(a, b):
 class TestVectorLayout(unittest.TestCase):
 
     def test_sizes_line_up(self):
-        self.assertEqual(hands.FEATURE_FLOATS, 100)
+        self.assertEqual(hands.FEATURE_FLOATS, 107)
+        self.assertEqual(hands.FEATURE_FLOATS,
+                         hands.PER_HAND_FLOATS * 2 + hands.RELATIONAL_FLOATS
+                         + hands.LOCATION_FLOATS)
         self.assertEqual(len(hands.FEATURE_COLUMNS), hands.FEATURE_FLOATS)
         self.assertEqual(len(hands.hand_block(place(300, 300))), hands.PER_HAND_FLOATS)
         self.assertEqual(len(hands.absent_hand_block()), hands.PER_HAND_FLOATS)
@@ -87,6 +90,8 @@ class TestVectorLayout(unittest.TestCase):
         self.assertEqual(hands.FEATURE_COLUMNS[hands.NONDOMINANT_OFFSET], "non_present")
         self.assertEqual(hands.FEATURE_COLUMNS[hands.RELATIONAL_OFFSET],
                          "rel_both_present")
+        self.assertEqual(hands.FEATURE_COLUMNS[hands.LOCATION_OFFSET],
+                         "face_present")
 
 
 class TestMatchesRecordedData(unittest.TestCase):
@@ -198,7 +203,8 @@ class TestAbsentHands(unittest.TestCase):
 
     def test_one_handed_sign_zeroes_the_relational_block(self):
         vector = hands.feature_vector(place(300, 300), None)
-        relational = vector[hands.RELATIONAL_OFFSET:]
+        relational = vector[hands.RELATIONAL_OFFSET:hands.LOCATION_OFFSET]
+        self.assertEqual(len(relational), hands.RELATIONAL_FLOATS)
         self.assertEqual(set(relational), {0.0})
 
     def test_two_hands_set_both_present(self):
