@@ -134,8 +134,8 @@ class TestOfflineModulesStayDependencyFree(unittest.TestCase):
     quietly gone. The tests.yml comment claims this property; this enforces it.
     """
 
-    OFFLINE_MODULES = ["dataset", "debouncer", "motion",
-                       "hands", "location", "sequence", "signset"]
+    OFFLINE_MODULES = ["dataset", "debouncer", "motion", "hands",
+                       "location", "sequence", "signset", "folds", "gloss"]
     HEAVY = {"numpy", "pandas", "cv2", "mediapipe", "sklearn",
              "joblib", "symspellpy", "scipy", "torch", "tensorflow"}
 

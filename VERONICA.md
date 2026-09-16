@@ -309,20 +309,57 @@ the academic-honesty note in `README.md` stops being necessary.
    phrases, since fluent signing differs in timing and coarticulation, which is
    exactly what stages 3 and 6 model.
 
-## Stage 5 — Classifier and honest evaluation
+## Stage 5 — Classifier and honest evaluation ⚙️ **script ready, blocked on data**
 
-Same discipline as `main`, which is already the strongest methodological thing
-in this repo: **leave-one-person-out is the headline**, the random split is
-quoted only as an explicitly inflated comparison.
+`folds.py`, `train_signs.py`, `test_folds.py`.
 
-For sequences the leakage risk is worse, not better — frames within a clip are
-near-duplicates *and* clips of the same sign by the same person in one sitting
-are near-duplicates of each other. Group by person, as `dataset.py` already
-does.
+```bash
+python train_signs.py          # cross-person report, then train
+python train_signs.py --quick  # skip the report
+```
 
-**Expect the first number to be worse than 84%.** More classes, harder classes,
-and a genuinely harder task. A lower number on real ASL is a better result than
-a higher one on fingerspelling, and it should be reported as such.
+Same shape as `train_classifier.py`, because its methodology is the strongest
+thing in this repository: **leave-one-person-out is the headline**, the random
+split is printed only as an explicitly inflated comparison. On the letter data
+those are 84.0% and 98.6%.
+
+Everything deciding *what goes in which fold* lives in `folds.py`, which is
+standard-library only and tested in CI. That split is deliberate: the sklearn
+call is the easy part to get right, and a bug in fold construction does not
+crash and does not look wrong — it just produces a number that is too high.
+This project has already been bitten by that once.
+
+Three ways a fold can quietly lie, all handled and all reported *before* the
+number rather than after it:
+
+- **A label only one person signed** is absent from training on that person's
+  fold, so it scores ~0 for a reason that has nothing to do with the model.
+  Excluded, as `train_classifier.py` already does.
+- **`_REST` counted as a sign.** It is a real class the model must learn and
+  much easier than any sign, so it is reported separately and kept out of the
+  headline.
+- **Folds that are not comparable.** If one person signed 68 labels and another
+  20, their folds measure different tasks; averaging without saying so hides it.
+
+Clips are far more independent than frames were — each is a separate attempt —
+but the same trap exists one level up: twenty HELLOs by one person in one
+sitting are much more like each other than like anyone else's. Grouping by
+person closes both, which is why nothing groups by clip.
+
+One change from the letter model: **a `StandardScaler` in front of the MLP**.
+The 42 letter inputs were all the same kind of quantity in one range, so
+scaling did nothing. These 371 are not — landmark coordinates near ±3, clamped
+distances to 6, cosines to 1, a duration to 3, a coverage fraction to 1.
+Un-scaled, the widest block dominates the first layer purely through its units.
+
+**Expect a lower number than 84%.** More classes, harder classes, a genuinely
+harder task. A lower number on real ASL is a better result than a higher one on
+fingerspelling and should be reported as such.
+
+The pairs to read first in the confusion matrix are those between signs
+differing in only **one** parameter. Those say the parameter is not reaching
+the classifier — a representation problem in `hands`/`location`/`sequence`, not
+something more data will cure. G/Q on the letter model was exactly this.
 
 ## Stage 6 — Continuous signing
 
@@ -339,22 +376,62 @@ well — in particular its distinction between *absence of evidence* (`""`) and
 *evidence of a different handshape*, which is what stopped one held letter
 committing ten times. That distinction generalises; the thresholds do not.
 
-## Stage 7 — Phrases: gloss to English
+## Stage 7 — Phrases: gloss to English ✅ **done**
 
-ASL is not English word order and has no separate word for much of English
-grammar. `ME STORE GO-TO FINISH` is "I went to the store." Topic-comment
-ordering, no copula, aspect marked on the verb's movement rather than by an
-auxiliary.
+`gloss.py`, `test_gloss.py`.
 
-`nlp_bridge.py` currently does SymSpell correction over fingerspelled letters,
-which is the right tool for spelling and the wrong tool for grammar. Gloss →
-English is a reordering and inflection problem. Start with a template-based
-transformer over a small, closed vocabulary — honest, debuggable, and it
-degrades gracefully to a bare gloss string, which is still readable.
+A sign recogniser outputs **gloss** — the sequence of signs made. Gloss is not
+English, and rendering it as though it were is a mistranslation rather than a
+rough edge.
 
-This is also where the **name injection already in `nlp_bridge.py`** pays off:
-fingerspelling, routed from the letter model, is exactly how names arrive in a
-real conversation.
+| Gloss | English |
+| --- | --- |
+| `YESTERDAY ME GO SCHOOL` | Yesterday, I went to school. |
+| `YOU NAME WHAT` | What is your name? |
+| `ME TIRED` | I am tired. |
+| `ME DONT-UNDERSTAND` | I do not understand. |
+| `ME NEED GO BATHROOM` | I need to go to the bathroom. |
+| `HELLO ME NAME L-A-I-L-A` | Hello, my name is Laila. |
+
+It undoes the differences ASL systematically has: **no copula**, **tense as a
+time marker rather than a verb inflection**, **wh-words at the end**, **no
+articles**.
+
+This turned out **not to be blocked on stage 5 at all** — it transforms gloss
+strings and needs only a vocabulary, which stage 4 settled. The "after 5" in
+the original plan was pipeline order mistaken for a dependency.
+
+### Rules, not a model — and the reason is the failure mode
+
+Over a closed vocabulary a template transformer is honest, debuggable, and
+**degrades gracefully**: when it cannot parse something it returns the gloss,
+which is still readable. A Deaf signer reading `ME GO STORE` loses nothing,
+while a fluent English sentence that says the wrong thing is worse than no
+translation at all. A learned translator needs a parallel corpus this project
+does not have and fails in the opposite direction, by inventing fluent text.
+
+Two decisions worth knowing about:
+
+- **`HE-SHE` renders as "they".** The ASL sign is a *point*, which carries no
+  gender. Choosing "he" or "she" would invent information the signer did not
+  give, every time it appears. Singular "they" keeps exactly what was signed.
+- **`render(tokens, question=True)` exists now** for stage 8 to fill in: a brow
+  raise turns a statement into a yes/no question with no change to the hands,
+  so `YOU HUNGRY` is either "You are hungry." or "Are you hungry?" depending on
+  a channel this stage cannot see.
+
+### What it deliberately does not attempt
+
+Real ASL grammar is much richer, and pretending otherwise would be the same
+mistake as quoting a shuffled-split accuracy. **Aspect** (marked by modifying a
+verb's movement), **spatial agreement** (verbs moving between points assigned
+to referents), **classifiers**, and **role shift** are all unhandled and
+documented as such in the module. Stage 3 records the movement that carries
+aspect; nothing yet maps it to meaning.
+
+Spelling correction stays in `nlp_bridge.py` — grammar and spelling are
+separate jobs, and only one of them is testable without a third-party
+dictionary.
 
 ## Stage 8 — Non-manual markers
 
@@ -377,9 +454,9 @@ rough edge.
 | 2 — location / body anchor | ✅ done, 25 offline tests (face detector chosen) |
 | 3 — movement | ✅ done, 41 offline tests |
 | 4 — collection | ✅ tool built, 26 offline tests — **data not yet collected** |
-| 5 — classifier | blocked on stage 4 data |
-| 6 — continuous signing | after 5 |
-| 7 — gloss → English | after 5 |
+| 5 — classifier | ⚙️ script ready, 21 offline tests — **blocked on data** |
+| 6 — continuous signing | next buildable stage |
+| 7 — gloss → English | ✅ done, 37 offline tests |
 | 8 — non-manual markers | last |
 
 `main` is untouched and still runs. Veronica adds files rather than rewriting
