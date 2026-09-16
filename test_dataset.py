@@ -81,8 +81,15 @@ class TestSessionInference(unittest.TestCase):
         self.assertEqual(sorted(set(sessions)), [0, 1, 2])
         self.assertEqual(sessions.count(0), 15)
 
-    def test_real_dataset_splits_into_three_people(self):
-        """Guards the actual committed file, not a synthetic case."""
+    def test_real_dataset_is_attributed(self):
+        """Guards the actual committed file, not a synthetic case.
+
+        Deliberately does not pin the set of signers: people get added, and a
+        test that fails on every new contributor teaches people to edit the
+        test rather than read it. What is worth pinning is that every row is
+        attributed, and that the rows which *cannot* be attributed stay that
+        way.
+        """
         path = os.path.join(os.path.dirname(__file__), "landmark_data.csv")
         if not os.path.exists(path):
             self.skipTest("landmark_data.csv not present")
@@ -91,16 +98,24 @@ class TestSessionInference(unittest.TestCase):
         header, body = rows[0], rows[1:]
         self.assertEqual(header, dataset.HEADER,
                          "landmark_data.csv should carry the person column")
+
+        # Every row: full width, and a non-empty signer.
+        self.assertTrue(all(len(r) == len(dataset.HEADER) and r[1] for r in body))
+
+        # The original signers are still present.
         people = {r[1] for r in body}
-        self.assertEqual(people, {"omar", "laila", "nourhan", "unknown"})
-        # The word signs were recorded by all three signers in one sitting with
-        # no boundary in the file, so they must stay unattributed rather than
-        # being credited to whichever pass they happen to sit next to.
-        word_rows = {r[0] for r in body if r[1] == dataset.UNKNOWN_PERSON}
-        self.assertEqual(word_rows, {"ILY", "IHATEYOU", "HELLO"})
+        self.assertTrue({"omar", "laila", "nourhan"} <= people)
+
+        # The unattributable rows are the word signs recorded by three signers
+        # in one sitting, with no boundary in the file showing where one stops.
+        # They must stay unattributed rather than being credited to whichever
+        # pass they happen to sit next to. Note the implication runs one way:
+        # a word sign MAY carry a real signer (Riad recorded all three), but an
+        # `unknown` row must never be a letter.
         for r in body:
-            if len(r[0]) > 1:
-                self.assertEqual(r[1], dataset.UNKNOWN_PERSON)
+            if r[1] == dataset.UNKNOWN_PERSON:
+                self.assertGreater(len(r[0]), 1,
+                                   f"letter {r[0]!r} should have a known signer")
         # Every row has a person and the full 42 features.
         self.assertTrue(all(len(r) == 44 and r[1] for r in body))
 
