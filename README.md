@@ -62,18 +62,23 @@ on Linux/macOS everything else works, but speech output will not.
 `collect_data.py` asks who is signing and **appends** (never overwrites), so data
 from multiple people accumulates.
 
-**Collect from more people, not more frames per person.** Measured on the first
-three signers, testing against a person the model had never seen:
+**Collect from more people, not more frames per person.** Measured on this
+dataset, testing against a signer the model had never seen:
 
-| Change | Effect |
+| Signers in training | Mean cross-person accuracy |
 | --- | --- |
-| 1 person → 2 people training | 71.9% → **81.7%** |
-| 4,352 → 14,509 rows from the same people | 80.2% → 80.4% (nothing) |
+| 3 | 79.3% |
+| 4 | **84.0%** |
 
-Accuracy plateaus around 4,000 training rows, so aim for **~100 rows per label
-per person** and then move on to the next person. While recording, move the hand
-slowly — rotate it, shift it, change distance. A frozen pose produces hundreds
-of near-identical rows; the same time spent moving produces far more variety.
+Adding the fourth signer was worth **+4.7 points** for one 10-minute session.
+More rows from people already in the set is worth nothing by comparison
+(4,352 → 14,509 rows from the same two people moved accuracy 80.2% → 80.4%).
+
+So aim for **~100 rows per label per person**, then move on to the next person.
+While recording, **move the hand slowly** — rotate it, shift it, change
+distance. A frozen pose produces hundreds of near-identical rows; the same time
+spent moving produces far more variety, and variety is what transfers to a new
+signer (see the note on outlier signers in `NOTES.md`).
 
 `evaluate.py` records **both the signer and the condition on every row**, so a
 run spanning several people and several environments can be split by either
@@ -136,21 +141,28 @@ everyone else, test on a signer the model has never seen.
 | Measurement | Result |
 | --- | --- |
 | Random 15% row split | 98.6% — **inflated, do not quote** |
-| **Held-out person, pooled** | **79.3%** |
-| — held out Omar | 81.9% |
-| — held out Laila | 74.0% |
-| — held out Nourhan | 83.1% |
+| **Held-out person, mean** | **84.0%** |
+| — held out Nourhan | 89.2% |
+| — held out Riad | 88.0% |
+| — held out Omar | 83.8% |
+| — held out Laila | 75.2% |
+
+Four signers, 24,496 rows. The spread between signers is itself a result: the
+system's accuracy depends on how close a new signer's hand geometry is to those
+already collected, which is the argument for collecting more people rather than
+more frames.
 
 The gap is near-duplicate leakage: frames inside one recording burst are about
 5× closer to each other than two random frames of the same label, so a shuffled
 split trains on frame 200 and tests on frame 201. The held-out-person number is
 what a stranger at a demo experiences.
 
-`ILY`, `IHATEYOU` and `HELLO` were recorded by all three signers in one sitting,
-with no boundary in the file showing where one stops, so their rows are marked
-`unknown`: trained on in every fold, never tested on, and excluded from the
-figure above. Re-collecting them with the signer recorded is the fastest way to
-put them on the same footing as the letters.
+`ILY`, `IHATEYOU` and `HELLO` are **still excluded** from the figure above. The
+original rows were recorded by three signers in one sitting with no boundary in
+the file showing where one stops, so they are marked `unknown` (trained on in
+every fold, never tested on). Riad is the only identified signer for them, and
+cross-person testing needs two. One more person signing those three closes it
+— about 90 seconds of recording.
 
 The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/242)
 — both bigger than G→Q (146), which the in-sample number hid entirely.

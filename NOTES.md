@@ -44,7 +44,9 @@ Measured on the three signers, on letters only:
 | Measurement | Accuracy |
 | --- | --- |
 | Random 15% row split | 98.6% |
-| Leave-one-person-out | **79.3%** (omar 81.9, laila 74.0, nourhan 83.1) |
+| Leave-one-person-out | **84.0%** (nourhan 89.2, riad 88.0, omar 83.8, laila 75.2) |
+
+*(Four signers, 24,496 rows. Was 79.3% on three signers before Riad was added.)*
 
 It also answers how much more data to collect:
 
@@ -52,15 +54,17 @@ It also answers how much more data to collect:
 | --- | --- |
 | 1 person | 71.9% |
 | 2 people | 81.7% |
-| 2,176 rows (2 people) | 77.4% |
-| 4,352 rows | 80.2% |
-| 7,254 rows | 81.3% |
-| 14,509 rows | 80.4% |
+| 3 people | 79.3% |
+| 4 people | **84.0%** |
 
-Rows saturate around 4,000; people do not. The second signer was worth about
-+10 points. Collect **~100 rows per label per person** and then recruit the next
-person — roughly 8-10 people is the conventional target, though with only
-three signers that extrapolation is not something this data proves.
+Adding rows from people already in the set does nothing by comparison: 2,176 —
+4,352 — 7,254 — 14,509 rows from the same two people gave 77.4, 80.2, 81.3,
+80.4%. Rows saturate around 4,000; people do not.
+
+Collect **~100 rows per label per person** and then recruit the next person.
+Roughly 8-10 people is the conventional target; the per-signer gains here are
+diminishing (+9.8 for the second, +4.7 for the fourth) but still far better
+than anything else available.
 
 `landmark_data.csv` now carries a `person` column (`backfill_person.py`
 attributed the historical rows from the recording structure), `collect_data.py`
@@ -68,12 +72,48 @@ asks who is signing, and `train_classifier.py` reports leave-one-person-out as
 the headline with the random-split figure printed only as an explicitly
 inflated comparison.
 
+### An outlier signer is not bad data — do not re-collect them
+
+Laila's held-out fold reads **75.2%** while the other three sit at 83.8-89.2%.
+The instinct is that her landmarks were recorded badly and should be redone.
+Two measurements say otherwise, and both were run before anyone spent time on it.
+
+**Re-collecting cannot change that number.** In her own fold her rows are not in
+the training set at all — the model is trained on the other three and tested on
+her. The 75.2% is a statement about how well *they* cover her, not about the
+quality of her recording.
+
+**Her rows are the most valuable in the set.** Removing them from training makes
+everyone else worse:
+
+| Held out | With laila's rows | Without |
+| --- | --- | --- |
+| riad | 88.0% | 84.3% |
+| omar | 83.8% | 81.4% |
+| nourhan | 89.2% | 88.6% |
+
+Noisy or mislabelled data drags other people's folds *down*; hers lift them by
+up to 3.7 points. Both findings are the same fact from two sides: her average
+handshape sits furthest from the group (0.743, vs omar 0.581, nourhan 0.694,
+riad 0.665), so the others do not span her **and** she contributes variety
+nobody else does.
+
+Her within-label spread is also the highest (0.612, vs ~0.51 for omar and
+nourhan) — which reads as variety, not noise, given the above. Riad's is 0.264
+at ~108 rows per take, the signature of a held, frozen pose: good coverage, thin
+variety. Tell the next person to move their hand.
+
+The fix for a low outlier fold is **more different people**, each of which
+widens the space her hands sit inside. Re-recording her "more carefully" would
+narrow the variety that is currently helping, and risks lowering the mean.
+
 **`ILY`, `IHATEYOU` and `HELLO` cannot be validated across people.** All three
 signers recorded them in one sitting, and since each label is a single
 continuous run there is no boundary in the file marking who signed what. Their
 rows are marked `unknown`: trained on in every fold, never tested on. Guessing
 an attribution would corrupt the grouping every number here depends on.
-Re-collect them with the signer recorded.
+Riad is now the only identified signer for all three, and cross-person testing
+needs two — one more person signing them closes it, about 90 seconds.
 
 Cross-person confusions rank differently from the in-sample ones, which is
 itself a result: **K->P 415, P->K 410, S->N 345, N->S 242**, all larger than
