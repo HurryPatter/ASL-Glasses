@@ -122,3 +122,44 @@ class TestSessionInference(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestOfflineModulesStayDependencyFree(unittest.TestCase):
+    """CI installs nothing, so every module the suites import must be
+    importable with the standard library alone.
+
+    Without this, adding `import numpy` to one of them would not fail loudly:
+    the import error would skip or error the affected suite while the workflow
+    still looked like it ran, and the guard against logic regressions would be
+    quietly gone. The tests.yml comment claims this property; this enforces it.
+    """
+
+    OFFLINE_MODULES = ["dataset", "debouncer", "motion",
+                       "hands", "location", "sequence"]
+    HEAVY = {"numpy", "pandas", "cv2", "mediapipe", "sklearn",
+             "joblib", "symspellpy", "scipy", "torch", "tensorflow"}
+
+    def test_no_third_party_imports(self):
+        import ast
+
+        for name in self.OFFLINE_MODULES:
+            path = f"{name}.py"
+            if not os.path.exists(path):
+                continue
+            imported = set()
+            for node in ast.walk(ast.parse(open(path).read())):
+                if isinstance(node, ast.Import):
+                    imported |= {a.name.split(".")[0] for a in node.names}
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module.split(".")[0])
+            self.assertFalse(
+                imported & self.HEAVY,
+                f"{path} imports {sorted(imported & self.HEAVY)}; CI installs "
+                f"nothing, so this silently disables its tests")
+
+    def test_they_actually_import(self):
+        import importlib
+
+        for name in self.OFFLINE_MODULES:
+            if os.path.exists(f"{name}.py"):
+                importlib.import_module(name)

@@ -140,35 +140,73 @@ yet — that happens with the stage 4 collection tool, since it is the first
 thing that needs a real face in a real frame. Obtaining the MediaPipe face
 detector model file is part of that step.
 
-## Stage 3 — Movement: from frames to a sign
+## Stage 3 — Movement: from frames to a sign ✅ **done**
+
+`sequence.py`, `test_sequence.py`.
 
 The jump `main` cannot make by adding classes. A static classifier sees one
 frame; a sign is a path.
 
-`motion.py` handles J and Z with hand-written rules, and its own docstring is
-honest that each new sign is another predicate plus its own thresholds. That
-does not scale past a handful — two signs, two rules, already two documented
-false-fire bugs. A vocabulary of dozens needs the movement **learned**, not
-enumerated.
+`motion.py` recognises J and Z with hand-written trajectory rules, and its own
+docstring is honest that each new sign means another predicate plus its own
+thresholds. Two signs in, that has already produced two documented false-fire
+bugs — a held Q emitting Z from fingertip jitter, and Z failing to fire because
+three strokes did not fit inside a 650ms window. Neither was a tuning mistake;
+both were the approach reaching its limit.
 
-The approach that fits the constraints: resample a window of frame vectors to a
-fixed number of keyframes and concatenate, plus explicit velocity and path
-summaries. This turns a variable-length sequence into a fixed-length vector
-that the same cheap MLP can classify — no RNN, no TensorFlow, no per-sign
-threshold tuning, and it keeps the "lightweight" objective that dropping
-TensorFlow bought.
+So a clip becomes a **fixed-length vector** and the same cheap MLP classifies
+it. No RNN, no TensorFlow, no per-sign thresholds — which keeps the lightweight
+result and means stage 5 reuses `train_classifier.py`'s methodology unchanged.
 
-Two things `motion.py` already got right and that carry over verbatim:
-**wall-clock windows, never frame counts** (embedded hardware will not match
-the dev laptop's fps), and **gating on whole-hand travel** rather than
-fingertip motion (per-landmark jitter cancels in a centroid; that gate is what
-stopped a held Q from emitting Z).
+Decisions worth knowing about:
 
-The existing ~11fps floor for motion signs still applies and still constrains
-the hardware choice.
+- **Each parameter is sampled at the rate it actually changes.** Resampling all
+  107 floats at 8 keyframes is 856 inputs against the few thousand clips a
+  realistic collection effort produces — that is not a model that generalises,
+  it is one that memorises, and `NOTES.md` already records what happened last
+  time this project measured memorisation and called it accuracy. Handshape is
+  near-constant within a sign, so it gets **2** keyframes; orientation,
+  inter-hand relationship and body location move continuously, so they get
+  **8**. Same clip, **371 floats instead of 856**.
+- **Keyframes are placed by time, not by index.** `NOTES.md` lists
+  wall-clock windows as a deliberate non-change; resampling by frame index
+  would quietly undo it. Tested: the same gesture at 30fps and 15fps agrees to
+  0.05, and a clip whose samples bunch up mid-gesture resamples correctly by
+  time and wrongly by index.
+- **Trajectory is self-relative; location is body-anchored; both are kept.**
+  The movement summary measures displacement from where the clip started, in
+  hand-widths, so it works with no face in frame. The keyframed location block
+  carries absolute position on the body when a face is there. "The hand arced
+  downward and reversed twice" and "it did so at the chin" are different facts
+  and neither is derivable from the other.
+- **Straightness and reversals are explicit.** A circle returns to its start,
+  so net displacement is near zero while path length is not — straightness is
+  what separates circular movement from straight, and circular movement is
+  common in ASL. Reversals count the repetitions many signs carry as part of
+  their form rather than as emphasis, using a deadband so that jitter never
+  becomes a reversal (the 2-D generalisation of `MotionDetector._strokes()`).
+- **Interpolated rotations are renormalized.** Blending two unit vectors
+  linearly gives the chord, not the arc, so a rotation halfway between two
+  keyframes would otherwise read as a *smaller* rotation — and the error grows
+  with the gap, i.e. it is worst on exactly the low-frame-rate hardware this is
+  meant to survive.
 
-**Done when:** a synthetic moving-hand sequence produces a stable fixed-length
-vector, tested offline at several frame rates — the `test_motion.py` pattern.
+### The frame-rate floor is confirmed from a second direction
+
+`SignBuffer.min_samples` (8) has to be met inside a real sign, so a 700ms sign
+needs about **11fps** — the same figure `NOTES.md` derives for J/Z from
+`motion.py`'s window, reached independently. That is a hardware constraint on
+the embedded target, not a tuning preference, and it now has two derivations
+behind it.
+
+### One thing that surprised the tests, worth knowing before stage 4
+
+With **no face detected, a hand crossing the entire frame produces identical
+frame vectors throughout** — position is normalized away by construction, which
+is what makes handshape recognisable anywhere in the frame. The trajectory is
+the only thing that knows it moved. This is why the wrist anchors are passed
+into `SignBuffer.add()` separately rather than read back out of the features,
+and it is pinned down by its own test.
 
 ## Stage 4 — Collection 🔒 *gated on 1–3 being frozen*
 
@@ -268,8 +306,8 @@ rough edge.
 | --- | --- |
 | 1 — two hands, orientation | ✅ done, 38 offline tests |
 | 2 — location / body anchor | ✅ done, 25 offline tests (face detector chosen) |
-| 3 — movement | next |
-| 4 — collection | 🔒 gated on 1–3 |
+| 3 — movement | ✅ done, 41 offline tests |
+| 4 — collection | **next** — 1–3 are frozen, so the schema is settled |
 | 5 — classifier | after 4 |
 | 6 — continuous signing | after 5 |
 | 7 — gloss → English | after 5 |

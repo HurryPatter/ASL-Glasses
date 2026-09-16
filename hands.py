@@ -340,3 +340,31 @@ FEATURE_COLUMNS = (
        "rel_size_ratio", "rel_cos", "rel_sin", "rel_contact"]
     + location.LOCATION_COLUMNS
 )
+
+
+# ── which floats move, and which hold still ────────────────────────────────
+# Stage 3 samples a clip at keyframes, and sampling every float at the same
+# rate wastes most of them. A sign's handshape is near-constant -- most signs
+# have one, a few have two -- while its orientation, the relationship between
+# the hands and its position on the body all move continuously. Splitting the
+# vector by how fast each part actually changes is what keeps the sign vector
+# small enough to learn from the number of clips a collection session can
+# realistically produce; sampling all 107 floats eight times over would be
+# 856 inputs against a few thousand examples.
+#
+# Derived from the layout rather than written out, so they cannot drift from
+# it if a block is ever resized.
+SHAPE_INDICES = (
+    [DOMINANT_OFFSET + 1 + i for i in range(SHAPE_FLOATS)]
+    + [NONDOMINANT_OFFSET + 1 + i for i in range(SHAPE_FLOATS)]
+)
+DYNAMIC_INDICES = [i for i in range(FEATURE_FLOATS) if i not in set(SHAPE_INDICES)]
+
+# (cos, sin) pairs that have to stay on the unit circle. Interpolating between
+# two keyframes shortens them, so stage 3 renormalizes these afterwards --
+# a rotation halfway between two others is still a rotation.
+UNIT_PAIR_INDICES = [
+    (DOMINANT_OFFSET + 1 + SHAPE_FLOATS, DOMINANT_OFFSET + 2 + SHAPE_FLOATS),
+    (NONDOMINANT_OFFSET + 1 + SHAPE_FLOATS, NONDOMINANT_OFFSET + 2 + SHAPE_FLOATS),
+    (RELATIONAL_OFFSET + 5, RELATIONAL_OFFSET + 6),
+]
