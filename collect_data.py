@@ -19,9 +19,13 @@ count: a random train/test split over frames measures memorisation, because
 frames within one recording are near-duplicates. Accuracy is reported by
 holding out a whole person, so every row needs to say who signed it.
 
-Collect from as many different people as you can. Measured on the first three,
-a second person was worth about +10 points on an unseen signer, while tripling
-the rows from the same people was worth nothing.
+Collect from as many different people as you can. Measured: a second person was
+worth about +10 points on an unseen signer and a fourth +4.7, while tripling the
+rows from the same people was worth nothing.
+
+When recording, tilt the hand and vary the handshape. Do NOT bother moving it
+around the frame or changing distance -- the normalization below removes both
+exactly, so those frames are duplicates however different they look on screen.
 
 Controls:
   [ / ]   = previous / next letter
@@ -60,6 +64,13 @@ CAPTURE_EVERY_N_FRAMES = 2  # avoid logging near-duplicate consecutive frames
 # frames. Measured: accuracy on an unseen signer plateaued at roughly 4,000
 # training rows total, so ~100 per label per person is where effort is better
 # spent on another person than on a longer take.
+#
+# Rows are not the whole story though. What makes a row useful is variation the
+# features can actually represent, and normalize_landmarks() removes position,
+# distance-from-camera and in-plane rotation exactly (verified: those change the
+# 42 floats by ~1e-16). Only out-of-plane tilt and genuine handshape change
+# survive. So a take should tilt the hand and vary finger curl; waving it around
+# the frame contributes literally nothing.
 SUGGESTED_ROWS_PER_LABEL = 100
 
 
@@ -140,9 +151,11 @@ def main():
     print(f"Data collection ready -- signing as '{person}'.")
     print("[ / ] = prev/next letter | SPACE = start/stop recording | Q = quit")
     print(f"Aim for ~{SUGGESTED_ROWS_PER_LABEL} rows per label, then stop.")
-    print("Move the hand slowly while recording -- rotate it, shift it around the")
-    print("frame, change distance. A frozen pose gives hundreds of near-identical")
-    print("rows; the same time spent moving gives far more usable variety.")
+    print("While recording, vary what the FEATURES can see:")
+    print("  - TILT the hand toward and away from the camera")
+    print("  - vary the handshape slightly: finger curl, thumb position")
+    print("Moving it around the frame, closer/further, or rotating it in the")
+    print("image plane does NOTHING -- the hand frame normalizes all three away.")
 
     while True:
         ret, frame = cap.read()
