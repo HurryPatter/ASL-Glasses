@@ -78,9 +78,21 @@ Decisions worth knowing about:
 
 MediaPipe reports handedness relative to an assumed mirroring of the input.
 **On this project's actual dev machine that assumption runs the opposite way to
-what the code assumed**: `check_setup.py` reported `Left` on 100% of frames for
-a raised right hand. Caught before any clip was collected, which is the entire
-reason the check exists.
+what the code assumed**: MediaPipe reports `Left` for a raised right hand, with
+the displayed feed confirmed mirrored (the hand lands at x≈0.85, the right side
+of the frame). So the convention on that build is the reverse of the documented
+one, and `mirrored_input=false` is correct there. Caught before a single clip
+was collected, which is the entire reason the check exists.
+
+Note what the check asserts, because the first version got this wrong: **not**
+that the raw label reads `Right`, but that the signer's right hand **lands in
+the dominant block** once the configured convention is applied. A raw `Left` is
+fine when the setting accounts for it. The original compared the raw label
+against `Right` and so failed identically whether the setting was correct or
+not — it told the user to set a flag and then ignored the flag. It now runs the
+frame through the same `capture.scene()` the collector uses, rather than
+re-deriving the rule, since a check that reimplements what it is checking can
+agree with itself and still be wrong.
 
 It cannot be settled by reading code. It depends on the MediaPipe build *and*
 on the camera, since some webcams deliver an already-mirrored feed that

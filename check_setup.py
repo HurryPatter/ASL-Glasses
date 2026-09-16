@@ -141,7 +141,8 @@ def build_detectors():
     return capture.build_landmarker(num_hands=2), capture.build_face_detector()
 
 
-def measure(cam, landmarker, detector, seconds, prompt=None):
+def measure(cam, landmarker, detector, seconds, prompt=None,
+            mirrored_input=True):
     """Run the real pipeline and collect what it saw.
 
     The camera is `cam`, not `capture`: `capture` is the MediaPipe adapter
@@ -150,6 +151,7 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
     """
     import capture
     import cv2
+    import hands as hands_module
 
     start = time.monotonic()
     frames = 0
@@ -157,6 +159,8 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
     sides = []
     faces = 0
     two_handed = 0
+    hand_frames = 0
+    dominant_frames = 0
 
     while time.monotonic() - start < seconds:
         ok, frame = cam.read()
@@ -180,6 +184,19 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
                 # reaching MediaPipe is mirrored -- which is the difference
                 # between two root causes with different fixes.
                 sides.append(found[0][0][0][0])
+
+            # The question that actually matters: with the convention now in
+            # force, does the hand they raised land in the DOMINANT block?
+            # Run it through the same capture.scene() the collector uses,
+            # rather than re-deriving the rule here -- a check that
+            # reimplements what it is checking can agree with itself and
+            # still be wrong.
+            height, width = frame.shape[:2]
+            dom, _, _ = capture.scene(found, None, width, height,
+                                      signer_dominant=hands_module.RIGHT,
+                                      mirrored_input=mirrored_input)
+            hand_frames += 1
+            dominant_frames += int(dom is not None)
         if detector.detect_for_video(image, timestamp_ms).detections:
             faces += 1
 
@@ -200,6 +217,9 @@ def measure(cam, landmarker, detector, seconds, prompt=None):
         "sides": sides,
         "faces": faces,
         "two_handed": two_handed,
+        "hand_frames": hand_frames,
+        "dominant_frames": dominant_frames,
+        "mirrored_input": mirrored_input,
     }
 
 
@@ -281,46 +301,54 @@ def check_handedness(stats):
     detail = f"MediaPipe said '{reported}' on {agreement:.0%} of frames; "
     detail += f"your hand was on {where}"
 
-    if agreement < 0.8:
-        return record(WARN, "Handedness convention", detail,
-                      "Mixed, which is itself a finding -- MediaPipe's label "
-                      "flips, most readily\nwhen the palm turns away. Clip "
-                      "reconstruction now resolves identity over a\nwhole clip "
-                      "rather than per frame, so this is handled, but re-run "
-                      "with\nonly your right hand raised to read the "
-                      "convention cleanly.")
+    convention = stats.get("mirrored_input", True)
+    hand_frames = stats.get("hand_frames", 0)
+    landed = stats.get("dominant_frames", 0)
+    resolved = landed / hand_frames if hand_frames else 0.0
 
-    if reported == "Right":
+    detail = (f"raw label '{reported}' ({agreement:.0%}), hand on {where}; "
+              f"mirrored_input={convention} -> "
+              f"lands in the DOMINANT block {resolved:.0%} of the time")
+
+    if agreement < 0.8:
+        record(WARN, "Handedness convention", detail,
+               "The raw label is mixed, which is itself a finding -- MediaPipe "
+               "flips it, most\nreadily when the palm turns away. Clip "
+               "reconstruction resolves identity over\na whole clip rather than "
+               "per frame, so this is handled, but re-run with only\nyour right "
+               "hand raised to read the convention cleanly.")
+        return False
+
+    if resolved > 0.8:
+        # The raw label being 'Left' is not a problem once the convention
+        # accounts for it -- what matters is where the hand ends up.
         note = ""
-        if view == "not mirrored":
-            note = ("\nNote: your hand appeared on the left of the frame, so the "
-                    "feed is not\nmirrored -- the labels happen to come out "
-                    "right anyway. Re-check on the\nglasses, where the camera "
-                    "changes.")
+        if reported != "Right":
+            note = (f"MediaPipe calls your right hand '{reported}' on this "
+                    f"build, and the\nconvention is set to compensate. That is "
+                    f"working as intended.")
         record(PASS, "Handedness convention", detail, note)
         return True
 
     cause = ""
     if view == "mirrored":
         cause = ("The displayed feed IS mirrored -- your right hand is on the "
-                 "right --\nand MediaPipe still called it left, so its "
-                 "convention runs the\nopposite way on this build.")
+                 "right --\nso MediaPipe's convention runs the opposite way on "
+                 "this build.")
     elif view == "not mirrored":
         cause = ("Your right hand appeared on the LEFT of the frame, so this "
                  "camera\nalready delivers a mirrored feed and cv2.flip "
-                 "un-mirrors it. The\nfix is the same, but expect a different "
-                 "answer on other hardware.")
+                 "un-mirrors it. Expect a\ndifferent answer on other hardware.")
 
     return record(FAIL, "Handedness convention", detail,
-                  f"INVERTED -- labels must be swapped.\n{cause}\n\n"
-                  f"Fix it once, for every tool:\n"
-                  f"    python check_setup.py --set-mirrored-input false\n"
-                  f"That writes {config.CONFIG_PATH}, which collect_signs.py and\n"
-                  f"demo_veronica.py both read. The value is also recorded into "
-                  f"every\nclip, so if it is ever wrong again "
-                  f"`python rebuild_signs.py --mirrored-input true`\n"
-                  f"re-derives every training row from the raw landmarks. "
-                  f"Nobody re-signs.")
+                  f"Your right hand is NOT landing in the dominant block.\n"
+                  f"{cause}\n\nFlip the convention:\n"
+                  f"    python check_setup.py --set-mirrored-input "
+                  f"{'false' if convention else 'true'}\n"
+                  f"then run this again. The value is recorded into every clip, "
+                  f"so if it is\never wrong again `python rebuild_signs.py "
+                  f"--mirrored-input <value>` re-derives\nevery training row "
+                  f"from the raw landmarks. Nobody re-signs.")
 
 
 def check_two_hands(stats):
@@ -370,14 +398,17 @@ def main():
         if cam is not None:
             landmarker, detector = build_detectors()
             try:
+                effective = config.mirrored_input()
                 if args.skip_hands:
-                    stats = measure(cam, landmarker, detector, args.seconds)
+                    stats = measure(cam, landmarker, detector, args.seconds,
+                                    mirrored_input=effective)
                 else:
                     print("\n  >>> Hold up your RIGHT hand, facing the camera.")
                     print("  >>> Capturing for "
                           f"{args.seconds:.0f} seconds...\n")
                     stats = measure(cam, landmarker, detector, args.seconds,
-                                    prompt="Hold up your RIGHT hand")
+                                    prompt="Hold up your RIGHT hand",
+                                    mirrored_input=effective)
                 check_throughput(stats)
                 check_face(stats)
                 if not args.skip_hands:

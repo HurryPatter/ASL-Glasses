@@ -327,6 +327,46 @@ class TestHandAssignment(unittest.TestCase):
         self.assertEqual(hands.assign_hands([]), (None, None))
 
 
+class TestConventionResolvesToTheDominantBlock(unittest.TestCase):
+    """What check_setup.py actually needs to be true.
+
+    The raw label being 'Left' for a right hand is not itself a problem --
+    MediaPipe's convention runs the opposite way on some builds. What matters
+    is whether, under the configured convention, the signer's right hand lands
+    in the DOMINANT block. check_setup.py originally compared the raw label
+    against 'Right' and so failed identically whether the setting was correct
+    or not: it told the user to set a flag and then ignored it.
+    """
+
+    def setUp(self):
+        self.right_hand = place(500, 300)
+
+    def test_an_inverted_build_is_corrected_by_the_flag(self):
+        # MediaPipe calls the signer's right hand "Left" on this build.
+        detected = [(self.right_hand, hands.LEFT)]
+
+        wrong, _ = hands.assign_hands(detected, mirrored_input=True)
+        self.assertIsNone(wrong, "uncorrected, the right hand misses the "
+                                 "dominant block entirely")
+
+        corrected, _ = hands.assign_hands(detected, mirrored_input=False)
+        self.assertEqual(corrected, self.right_hand)
+
+    def test_a_normal_build_needs_no_flag(self):
+        detected = [(self.right_hand, hands.RIGHT)]
+        dominant, _ = hands.assign_hands(detected, mirrored_input=True)
+        self.assertEqual(dominant, self.right_hand)
+
+    def test_the_flag_is_what_decides_it_either_way(self):
+        # Exactly one setting puts the hand in the dominant block, whichever
+        # way round the build reports -- so the check has a decidable answer.
+        for label in (hands.LEFT, hands.RIGHT):
+            landed = [hands.assign_hands([(self.right_hand, label)],
+                                         mirrored_input=setting)[0] is not None
+                      for setting in (True, False)]
+            self.assertEqual(sorted(landed), [False, True])
+
+
 class TestHandednessSymmetry(unittest.TestCase):
     """A left-handed signer must land in the same feature space as everyone
     else -- otherwise every sign they make is an unseen class."""
