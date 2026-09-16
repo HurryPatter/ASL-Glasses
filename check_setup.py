@@ -115,20 +115,20 @@ def check_offline_tests():
 # ── camera ─────────────────────────────────────────────────────────────────
 def open_camera(index):
     import cv2
-    capture = cv2.VideoCapture(index)
-    if not capture.isOpened():
+    cam = cv2.VideoCapture(index)
+    if not cam.isOpened():
         record(FAIL, "Camera", f"could not open camera {index}",
                "Check it is connected and not in use by another application.\n"
                "Try --camera 1 if you have more than one.")
         return None
-    ok, frame = capture.read()
+    ok, frame = cam.read()
     if not ok:
-        capture.release()
+        cam.release()
         record(FAIL, "Camera", "opened but returned no frame")
         return None
     height, width = frame.shape[:2]
     record(PASS, "Camera", f"{width}x{height}")
-    return capture
+    return cam
 
 
 def build_detectors():
@@ -139,8 +139,13 @@ def build_detectors():
     return capture.build_landmarker(num_hands=2), capture.build_face_detector()
 
 
-def measure(capture, landmarker, detector, seconds, prompt=None):
-    """Run the real pipeline and collect what it saw."""
+def measure(cam, landmarker, detector, seconds, prompt=None):
+    """Run the real pipeline and collect what it saw.
+
+    The camera is `cam`, not `capture`: `capture` is the MediaPipe adapter
+    module this function imports, and a parameter of the same name shadows it
+    the moment the import runs.
+    """
     import capture
     import cv2
 
@@ -151,7 +156,7 @@ def measure(capture, landmarker, detector, seconds, prompt=None):
     two_handed = 0
 
     while time.monotonic() - start < seconds:
-        ok, frame = capture.read()
+        ok, frame = cam.read()
         if not ok:
             break
         frame = cv2.flip(frame, 1)             # selfie view, as main.py does
@@ -285,17 +290,17 @@ def main():
         print("\nCamera")
         print("-" * 60)
         import cv2
-        capture = open_camera(args.camera)
-        if capture is not None:
+        cam = open_camera(args.camera)
+        if cam is not None:
             landmarker, detector = build_detectors()
             try:
                 if args.skip_hands:
-                    stats = measure(capture, landmarker, detector, args.seconds)
+                    stats = measure(cam, landmarker, detector, args.seconds)
                 else:
                     print("\n  >>> Hold up your RIGHT hand, facing the camera.")
                     print("  >>> Capturing for "
                           f"{args.seconds:.0f} seconds...\n")
-                    stats = measure(capture, landmarker, detector, args.seconds,
+                    stats = measure(cam, landmarker, detector, args.seconds,
                                     prompt="Hold up your RIGHT hand")
                 check_throughput(stats)
                 check_face(stats)
@@ -305,7 +310,7 @@ def main():
             finally:
                 landmarker.close()
                 detector.close()
-                capture.release()
+                cam.release()
                 cv2.destroyAllWindows()
     elif not args.no_camera:
         print("\nCamera checks skipped -- fix the failures above first.")

@@ -173,6 +173,46 @@ class TestOfflineModulesStayDependencyFree(unittest.TestCase):
             self.assertNotIn("import capture", source,
                              f"{path} must not depend on the MediaPipe seam")
 
+    def test_no_function_shadows_a_module_it_imports(self):
+        """A parameter named the same as a module imported inside the function.
+
+        This is a real bug that shipped: check_setup.py had
+        `def measure(capture, ...)` and later grew an `import capture` in its
+        body for the MediaPipe adapter. The import rebinds the name, so the
+        camera object became the module and `capture.read()` died at runtime --
+        past every offline test, only on a machine with a camera attached.
+
+        Cheap to detect statically, and the failure mode is always the same:
+        it works until the shadowed name is used.
+        """
+        import ast
+        import glob
+
+        offenders = []
+        for path in sorted(glob.glob("*.py")):
+            tree = ast.parse(open(path).read())
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                params = {a.arg for a in node.args.args + node.args.kwonlyargs}
+                if node.args.vararg:
+                    params.add(node.args.vararg.arg)
+                if node.args.kwarg:
+                    params.add(node.args.kwarg.arg)
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Import):
+                        bound = {(a.asname or a.name.split(".")[0])
+                                 for a in inner.names}
+                    elif isinstance(inner, ast.ImportFrom):
+                        bound = {(a.asname or a.name) for a in inner.names}
+                    else:
+                        continue
+                    for name in bound & params:
+                        offenders.append(f"{path}:{node.name}() imports "
+                                         f"'{name}', shadowing its parameter")
+
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
     def test_they_actually_import(self):
         import importlib
 
