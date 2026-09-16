@@ -46,17 +46,15 @@ import sys
 import time
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python as mp_python
-from mediapipe.tasks.python import vision as mp_vision
 
+import capture
 import hands
 import location
 import sequence
 import signset
 
-HAND_MODEL = "hand_landmarker.task"
-FACE_MODEL = "blaze_face_short_range.tflite"
+HAND_MODEL = capture.HAND_MODEL
+FACE_MODEL = capture.FACE_MODEL
 
 # Clips per sign per person. The letter dataset plateaued at roughly 4,000
 # training rows total while each new *person* kept paying, so the budget is
@@ -75,7 +73,7 @@ and signs that differ only in where they are made become the same class.
 
 Download MediaPipe's short-range face detector into this directory:
 
-    https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite
+    {capture.FACE_MODEL_URL}
 
 Collecting a whole session without it by accident would be expensive, which
 is why this stops rather than warns. If you really mean to, pass --no-face.
@@ -106,73 +104,6 @@ def ask_dominant():
         if answer in ("l", "left"):
             return hands.LEFT
         print("  Please answer R or L.")
-
-
-def build_landmarker():
-    options = mp_vision.HandLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=HAND_MODEL),
-        running_mode=mp_vision.RunningMode.VIDEO,
-        num_hands=2,                       # the whole point of stage 1
-        min_hand_detection_confidence=0.6,
-        min_hand_presence_confidence=0.6,
-        min_tracking_confidence=0.6,
-    )
-    return mp_vision.HandLandmarker.create_from_options(options)
-
-
-def build_face_detector():
-    options = mp_vision.FaceDetectorOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=FACE_MODEL),
-        running_mode=mp_vision.RunningMode.VIDEO,
-        min_detection_confidence=0.5,
-    )
-    return mp_vision.FaceDetector.create_from_options(options)
-
-
-def detected_hands(result):
-    """MediaPipe's result -> [(normalized points, handedness label)].
-
-    Handedness is taken as reported. That is correct while the frame is
-    mirrored -- cv2.flip below -- and wrong if it ever stops being; see
-    hands.assign_hands() and VERONICA.md, since nothing downstream can detect
-    the difference.
-    """
-    out = []
-    for index, landmarks in enumerate(result.hand_landmarks):
-        label = None
-        if index < len(result.handedness) and result.handedness[index]:
-            label = result.handedness[index][0].category_name
-        out.append(([(lm.x, lm.y) for lm in landmarks], label))
-    return out
-
-
-def largest_face(result, frame_w, frame_h):
-    """The biggest detected face, as a **normalized** (x, y, w, h) box.
-
-    Biggest, because the conversation partner is the nearest person to the
-    camera; a face in the background is not the one being signed by.
-
-    The normalization is the part that matters. MediaPipe Tasks reports a
-    detection's bounding box in *pixels*, while it reports hand landmarks
-    normalized to [0, 1] -- two different conventions out of one library. The
-    archive stores everything normalized, so the conversion happens here, once,
-    rather than at each place a face is read back.
-
-    Getting this wrong would not crash: a pixel box read as normalized puts the
-    face somewhere off past the corner of the frame, and every location feature
-    would be a large, stable, plausible-looking number. So the guard below is
-    worth its three lines -- a face box narrower than one pixel is impossible,
-    which makes it a sound discriminator rather than a guess.
-    """
-    if not result.detections:
-        return None
-    best = max(result.detections,
-               key=lambda d: d.bounding_box.width * d.bounding_box.height)
-    box = best.bounding_box
-    if box.width <= 1.0 and box.height <= 1.0:
-        return (box.origin_x, box.origin_y, box.width, box.height)
-    return (box.origin_x / frame_w, box.origin_y / frame_h,
-            box.width / frame_w, box.height / frame_h)
 
 
 def draw(frame, detected, face_box, state):
@@ -228,12 +159,8 @@ def draw_readout(frame, detected, face_box, dominant_hand, frame_w, frame_h):
     the thing to verify before a real session -- raise your right hand and
     confirm it says so.
     """
-    pixel_hands = [([(x * frame_w, y * frame_h) for x, y in points], label)
-                   for points, label in detected]
-    face = None if face_box is None else location.face_from_normalized_box(
-        face_box[0], face_box[1], face_box[2], face_box[3], frame_w, frame_h)
-    dom, non, face = hands.canonical_scene(pixel_hands, face,
-                                           signer_dominant=dominant_hand)
+    dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
+                                   signer_dominant=dominant_hand)
 
     lines = [f"raw handedness: {[label for _, label in detected] or '-'}",
              f"dominant hand tracked: {'yes' if dom is not None else 'no'}",
@@ -265,8 +192,8 @@ def main():
     person = ask_person()
     dominant_hand = ask_dominant()
 
-    landmarker = build_landmarker()
-    face_detector = build_face_detector() if use_face else None
+    landmarker = capture.build_landmarker(num_hands=2)
+    face_detector = capture.build_face_detector() if use_face else None
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -333,14 +260,13 @@ def main():
             frame_h, frame_w = frame.shape[:2]
             timestamp_ms = int((time.monotonic() - start) * 1000)
 
-            image = mp.Image(image_format=mp.ImageFormat.SRGB,
-                             data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            image = capture.to_mp_image(frame)
             hand_result = landmarker.detect_for_video(image, timestamp_ms)
-            detected = detected_hands(hand_result)
+            detected = capture.detected_hands(hand_result)
 
             face_box = None
             if face_detector is not None:
-                face_box = largest_face(
+                face_box = capture.largest_face(
                     face_detector.detect_for_video(image, timestamp_ms),
                     frame_w, frame_h)
 

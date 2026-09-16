@@ -222,12 +222,17 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `folds.py` | Leave-one-person-out fold construction (Veronica stage 5, stdlib only) |
 | `train_signs.py` | Sign classifier training + cross-person report (Veronica stage 5) |
 | `gloss.py` | ASL gloss → English (Veronica stage 7, stdlib only) |
+| `segment.py` | Continuous sign segmentation (Veronica stage 6, stdlib only) |
+| `capture.py` | The single MediaPipe adapter seam (Veronica) |
+| `demo_veronica.py` | Live Veronica pipeline — runs without a trained model |
+| `check_setup.py` | Preflight: deps, models, camera fps, handedness convention |
 | `test_hands.py` | Offline feature-layer tests (no camera needed) |
 | `test_location.py` | Offline location-layer tests (no camera needed) |
 | `test_sequence.py` | Offline movement-layer tests (no camera needed) |
 | `test_signset.py` | Offline sign-schema / reconstruction tests (no camera needed) |
 | `test_folds.py` | Offline fold-construction tests (no camera needed) |
 | `test_gloss.py` | Offline gloss→English tests (no camera needed) |
+| `test_segment.py` | Offline continuous-segmentation tests (no camera needed) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |

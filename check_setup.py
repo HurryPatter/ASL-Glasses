@@ -1,0 +1,332 @@
+"""
+Preflight check for Project Veronica — run this before collecting anything.
+
+Everything downstream of a collection session is expensive to redo, and two of
+the failure modes in this pipeline do not announce themselves: a wrong
+handedness convention labels every left hand right, and a camera below the
+frame-rate floor silently produces clips no sign can be assembled from. Both
+are cheap to check now and costly to discover in the data.
+
+    python check_setup.py              # everything, including camera
+    python check_setup.py --no-camera  # offline checks only
+    python check_setup.py --skip-hands # camera checks without the interactive part
+
+Exit status is non-zero if anything failed, so it can gate a script.
+"""
+import argparse
+import os
+import subprocess
+import sys
+import time
+
+# Named here rather than imported, because this script has to run and report
+# useful failures on a machine where MediaPipe is not installed at all -- which
+# is exactly the state it exists to diagnose.
+FACE_MODEL = "blaze_face_short_range.tflite"
+HAND_MODEL = "hand_landmarker.task"
+FACE_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_detector/"
+                  "blaze_face_short_range/float16/latest/blaze_face_short_range.tflite")
+
+# motion.py needs 8 samples inside a 650ms window and sequence.py needs 8
+# inside a sign; both land on about 11fps, derived independently. Below this
+# the motion letters stop existing and clips stop being assemblable.
+FPS_FLOOR = 11.0
+FPS_COMFORTABLE = 15.0
+
+PASS, WARN, FAIL = "PASS", "WARN", "FAIL"
+MARK = {PASS: "  ok  ", WARN: " warn ", FAIL: " FAIL "}
+
+results = []
+
+
+def record(status, name, detail="", fix=""):
+    results.append((status, name, detail, fix))
+    print(f"[{MARK[status]}] {name}" + (f" -- {detail}" if detail else ""))
+    if fix and status != PASS:
+        for line in fix.strip().splitlines():
+            print(f"           {line}")
+    return status == PASS
+
+
+# ── offline ────────────────────────────────────────────────────────────────
+def check_python():
+    version = sys.version_info
+    detail = f"{version.major}.{version.minor}.{version.micro}"
+    if version < (3, 9):
+        return record(FAIL, "Python version", detail,
+                      "Veronica uses 3.9+ syntax. Install a newer Python.")
+    return record(PASS, "Python version", detail)
+
+
+def check_packages():
+    needed = {
+        "cv2": "opencv-python", "mediapipe": "mediapipe", "numpy": "numpy",
+        "sklearn": "scikit-learn", "joblib": "joblib",
+        "symspellpy": "symspellpy", "pandas": "pandas",
+    }
+    missing = []
+    for module, package in needed.items():
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+    if missing:
+        return record(FAIL, "Python packages", f"missing {', '.join(missing)}",
+                      "pip install -r requirements.txt")
+    return record(PASS, "Python packages", f"all {len(needed)} present")
+
+
+def check_models():
+    ok = True
+    if os.path.exists(HAND_MODEL):
+        record(PASS, "Hand landmarker model", HAND_MODEL)
+    else:
+        ok = record(FAIL, "Hand landmarker model", f"{HAND_MODEL} not found",
+                    "It is committed to the repo -- check you are in the "
+                    "repository root.")
+    if os.path.exists(FACE_MODEL):
+        record(PASS, "Face detector model", FACE_MODEL)
+    else:
+        ok = record(FAIL, "Face detector model", f"{FACE_MODEL} not found",
+                    f"Stage 2 needs a face to anchor sign location against, or\n"
+                    f"FATHER and MOTHER become the same sign. Download it:\n"
+                    f"  curl -LO {FACE_MODEL_URL}")
+    return ok
+
+
+def check_offline_tests():
+    """The suite that needs no camera and no model.
+
+    Worth running here rather than assuming: it is the only thing that
+    confirms the feature layers on *this* machine behave as they do in CI.
+    """
+    completed = subprocess.run(
+        [sys.executable, "-m", "unittest", "discover", "-p", "test_*.py"],
+        capture_output=True, text=True)
+    tail = completed.stderr.strip().splitlines()
+    count = next((l for l in tail if l.startswith("Ran ")), "")
+    if completed.returncode == 0:
+        return record(PASS, "Offline test suite", count or "passed")
+    return record(FAIL, "Offline test suite", count or "failed",
+                  "Run `python -m unittest discover -p \"test_*.py\" -v` "
+                  "to see which.")
+
+
+# ── camera ─────────────────────────────────────────────────────────────────
+def open_camera(index):
+    import cv2
+    capture = cv2.VideoCapture(index)
+    if not capture.isOpened():
+        record(FAIL, "Camera", f"could not open camera {index}",
+               "Check it is connected and not in use by another application.\n"
+               "Try --camera 1 if you have more than one.")
+        return None
+    ok, frame = capture.read()
+    if not ok:
+        capture.release()
+        record(FAIL, "Camera", "opened but returned no frame")
+        return None
+    height, width = frame.shape[:2]
+    record(PASS, "Camera", f"{width}x{height}")
+    return capture
+
+
+def build_detectors():
+    """The same detectors the collector and the demo build, via the same
+    adapter -- checking a different code path than the one that will run would
+    make this reassuring rather than useful."""
+    import capture
+    return capture.build_landmarker(num_hands=2), capture.build_face_detector()
+
+
+def measure(capture, landmarker, detector, seconds, prompt=None):
+    """Run the real pipeline and collect what it saw."""
+    import capture
+    import cv2
+
+    start = time.monotonic()
+    frames = 0
+    handedness = []
+    faces = 0
+    two_handed = 0
+
+    while time.monotonic() - start < seconds:
+        ok, frame = capture.read()
+        if not ok:
+            break
+        frame = cv2.flip(frame, 1)             # selfie view, as main.py does
+        frames += 1
+        timestamp_ms = int((time.monotonic() - start) * 1000)
+        image = capture.to_mp_image(frame)
+
+        result = landmarker.detect_for_video(image, timestamp_ms)
+        found = capture.detected_hands(result)
+        if found:
+            if len(found) == 2:
+                two_handed += 1
+            handedness += [label for _, label in found if label]
+        if detector.detect_for_video(image, timestamp_ms).detections:
+            faces += 1
+
+        if prompt:
+            cv2.putText(frame, prompt, (10, 40), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (0, 220, 0), 2)
+            remaining = seconds - (time.monotonic() - start)
+            cv2.putText(frame, f"{remaining:.0f}s", (10, 75),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+            cv2.imshow("Veronica setup check", frame)
+            cv2.waitKey(1)
+
+    elapsed = time.monotonic() - start
+    return {
+        "fps": frames / elapsed if elapsed else 0.0,
+        "frames": frames,
+        "handedness": handedness,
+        "faces": faces,
+        "two_handed": two_handed,
+    }
+
+
+def check_throughput(stats):
+    fps = stats["fps"]
+    detail = f"{fps:.1f} fps with both models running"
+    if fps < FPS_FLOOR:
+        return record(FAIL, "Pipeline throughput", detail,
+                      f"Below the {FPS_FLOOR:.0f}fps floor. A sign needs 8 samples "
+                      f"inside it, so\nbelow this no clip can be assembled and no "
+                      f"motion letter can fire.\nClose other applications, lower "
+                      f"the camera resolution, or use\na faster machine before "
+                      f"collecting anything.")
+    if fps < FPS_COMFORTABLE:
+        return record(WARN, "Pipeline throughput", detail,
+                      f"Above the floor but below {FPS_COMFORTABLE:.0f}fps, so there "
+                      f"is no headroom.\nA slower moment during a session will drop "
+                      f"clips.")
+    return record(PASS, "Pipeline throughput", detail)
+
+
+def check_face(stats):
+    if not stats["frames"]:
+        return record(FAIL, "Face detection", "no frames captured")
+    ratio = stats["faces"] / stats["frames"]
+    detail = f"face found in {ratio:.0%} of frames"
+    if ratio < 0.5:
+        return record(FAIL, "Face detection", detail,
+                      "Location features will be mostly empty, so signs "
+                      "differing only in\nwhere they are made become the same "
+                      "class. Sit facing the camera,\nfully in frame, with the "
+                      "light in front of you rather than behind.")
+    if ratio < 0.9:
+        return record(WARN, "Face detection", detail,
+                      "Intermittent. Check framing and lighting.")
+    return record(PASS, "Face detection", detail)
+
+
+def check_handedness(stats):
+    """The hazard nothing downstream can detect.
+
+    MediaPipe labels handedness assuming a mirrored frame, which cv2.flip
+    satisfies. If that assumption is ever wrong, every left hand is labelled
+    right, trained on happily, and the features stay entirely plausible.
+    """
+    labels = stats["handedness"]
+    if not labels:
+        return record(FAIL, "Handedness convention", "no hand detected",
+                      "Hold your hand clearly in frame and run this again.")
+
+    rights = labels.count("Right")
+    ratio = rights / len(labels)
+    detail = f"reported '{'Right' if ratio > 0.5 else 'Left'}' on "
+    detail += f"{max(ratio, 1 - ratio):.0%} of frames"
+
+    if ratio > 0.8:
+        return record(PASS, "Handedness convention", detail)
+    if ratio < 0.2:
+        return record(FAIL, "Handedness convention", detail,
+                      "INVERTED. You raised your right hand and MediaPipe called "
+                      "it left.\nEvery hand would be labelled backwards, and "
+                      "nothing downstream can\ndetect that. Pass "
+                      "mirrored_input=False to hands.assign_hands() and\n"
+                      "hands.canonical_scene() -- see VERONICA.md stage 1.")
+    return record(WARN, "Handedness convention", detail,
+                  "Mixed. Probably both hands were in frame, or tracking was "
+                  "unstable.\nRe-run with only your right hand raised.")
+
+
+def check_two_hands(stats):
+    if stats["two_handed"]:
+        return record(PASS, "Two-hand tracking",
+                      f"both hands seen in {stats['two_handed']} frames")
+    return record(WARN, "Two-hand tracking", "never saw two hands at once",
+                  "Only one hand was in frame during the check, which is fine.\n"
+                  "Confirm with both hands up before a real session -- about "
+                  "half\nthe ASL lexicon is two-handed.")
+
+
+# ── main ───────────────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-camera", action="store_true")
+    parser.add_argument("--skip-hands", action="store_true",
+                        help="skip the interactive handedness check")
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--seconds", type=float, default=4.0)
+    args = parser.parse_args()
+
+    print("Project Veronica -- setup check\n")
+    print("Offline")
+    print("-" * 60)
+    check_python()
+    packages_ok = check_packages()
+    models_ok = check_models()
+    check_offline_tests()
+
+    if not args.no_camera and packages_ok and models_ok:
+        print("\nCamera")
+        print("-" * 60)
+        import cv2
+        capture = open_camera(args.camera)
+        if capture is not None:
+            landmarker, detector = build_detectors()
+            try:
+                if args.skip_hands:
+                    stats = measure(capture, landmarker, detector, args.seconds)
+                else:
+                    print("\n  >>> Hold up your RIGHT hand, facing the camera.")
+                    print("  >>> Capturing for "
+                          f"{args.seconds:.0f} seconds...\n")
+                    stats = measure(capture, landmarker, detector, args.seconds,
+                                    prompt="Hold up your RIGHT hand")
+                check_throughput(stats)
+                check_face(stats)
+                if not args.skip_hands:
+                    check_handedness(stats)
+                    check_two_hands(stats)
+            finally:
+                landmarker.close()
+                detector.close()
+                capture.release()
+                cv2.destroyAllWindows()
+    elif not args.no_camera:
+        print("\nCamera checks skipped -- fix the failures above first.")
+
+    print("\n" + "=" * 60)
+    failed = [r for r in results if r[0] == FAIL]
+    warned = [r for r in results if r[0] == WARN]
+    print(f"{len(results) - len(failed) - len(warned)} passed, "
+          f"{len(warned)} warning, {len(failed)} failed")
+
+    if failed:
+        print("\nFix these before collecting:")
+        for _, name, detail, _ in failed:
+            print(f"  - {name}: {detail}")
+        sys.exit(1)
+
+    print("\nReady. Next:")
+    print("  python demo_veronica.py    # live pipeline, no model needed yet")
+    print("  python collect_signs.py    # record clips")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

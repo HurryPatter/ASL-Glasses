@@ -134,8 +134,8 @@ class TestOfflineModulesStayDependencyFree(unittest.TestCase):
     quietly gone. The tests.yml comment claims this property; this enforces it.
     """
 
-    OFFLINE_MODULES = ["dataset", "debouncer", "motion", "hands",
-                       "location", "sequence", "signset", "folds", "gloss"]
+    OFFLINE_MODULES = ["dataset", "debouncer", "motion", "hands", "location",
+                       "sequence", "signset", "folds", "gloss", "segment"]
     HEAVY = {"numpy", "pandas", "cv2", "mediapipe", "sklearn",
              "joblib", "symspellpy", "scipy", "torch", "tensorflow"}
 
@@ -156,6 +156,22 @@ class TestOfflineModulesStayDependencyFree(unittest.TestCase):
                 imported & self.HEAVY,
                 f"{path} imports {sorted(imported & self.HEAVY)}; CI installs "
                 f"nothing, so this silently disables its tests")
+
+    def test_capture_py_is_the_only_mediapipe_seam(self):
+        """The offline layer is testable precisely because nothing in it
+        touches MediaPipe. capture.py is the single adapter, which is also
+        what keeps the pixel-vs-normalized face box conversion in one place
+        instead of three."""
+        import ast
+
+        for name in self.OFFLINE_MODULES:
+            path = f"{name}.py"
+            if not os.path.exists(path):
+                continue
+            source = open(path).read()
+            self.assertNotIn("import mediapipe", source, path)
+            self.assertNotIn("import capture", source,
+                             f"{path} must not depend on the MediaPipe seam")
 
     def test_they_actually_import(self):
         import importlib

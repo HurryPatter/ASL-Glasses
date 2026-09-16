@@ -361,20 +361,67 @@ differing in only **one** parameter. Those say the parameter is not reaching
 the classifier — a representation problem in `hands`/`location`/`sequence`, not
 something more data will cure. G/Q on the letter model was exactly this.
 
-## Stage 6 — Continuous signing
+## Stage 6 — Continuous signing ✅ **done**
 
-Everything above assumes someone presses a key to mark where a sign starts.
-Real conversation has no key.
+`segment.py`, `test_segment.py`, and `capture.py` / `demo_veronica.py` for the
+live path.
 
-The hard part is **movement epenthesis**: the transition between two signs is
-itself motion, and it looks like a sign to a detector that is only watching for
-movement. Signers also do not pause between signs the way speakers pause
-between words.
+Everything before this assumes someone presses a key to mark a sign's
+boundaries. Real conversation has no key.
 
-`debouncer.py` solves the letter-sized version of this problem and solves it
-well — in particular its distinction between *absence of evidence* (`""`) and
-*evidence of a different handshape*, which is what stopped one held letter
-committing ten times. That distinction generalises; the thresholds do not.
+### Why this is not boundary detection
+
+The obvious approach — find the pauses, or the minima in hand velocity, and cut
+there — does not work, for a reason with a name. **Movement epenthesis**: the
+transition between two signs is itself movement, and looks like a sign to
+anything watching for movement. Signers also do not pause between signs the way
+speakers pause between words, so the pauses a cutter would look for are often
+simply not there.
+
+So this does not cut first. It **classifies a trailing window continuously and
+commits when the answer is stable** — which is the same shape as the problem
+`debouncer.py` already solves for letters, one level up. Its central
+distinction generalises exactly:
+
+    ""       no confident reading   -- absence of evidence
+    "EAT"    a different sign       -- evidence the last one ended
+
+Treating the first as a boundary is what produced `QQQQQQQQQQ` from one steady
+hold. Here the same mistake fires a sign on every frame of an unrecognised
+transition. So **`Debouncer` is reused, not reimplemented** — 24 tests,
+replaying real recorded failure strings, and every property it has is one this
+needs: commit once per run, blanks must persist before releasing, a different
+label takes over faster than a blank because it is real evidence, and a genuine
+release re-arms the same label so `AGAIN AGAIN` commits twice.
+
+### Three defences against epenthesis, in order of how much work they do
+
+1. **The `_REST` class** — a transition classified as `_REST` produces no
+   reading at all. This is the main defence and the reason stage 4 collects
+   `_REST` even though nobody signs it.
+2. **The confidence floor** — a window spanning two signs is a clean example of
+   neither, so the classifier should be unsure.
+3. **The hold requirement** — a spurious label must survive several consecutive
+   evaluations, and a transition is brief.
+
+There is a test for the honest limit too: a classifier that is *confidently
+wrong for long enough* commits, and no threshold in this module fixes that.
+That is a model problem.
+
+### Cost
+
+Classifying every frame means a full `sign_vector()` build plus a forward pass
+at camera rate, on hardware that also has to sustain ~15fps of MediaPipe.
+Evaluation is **strided**: the buffer takes every frame, classification runs
+every `stride_ms`. At 30fps with a 100ms stride that is one evaluation in
+three, and the window it sees is unchanged.
+
+**The thresholds here are structural guesses.** Continuous segmentation is the
+least finished part of this pipeline, and it needs real continuous signing to
+tune — which is why `debug_info()` puts every one of them on screen. The value
+to watch first is `reading`: if transitions show a confident label rather than
+a blank, `_REST` is not covering them, and more `_REST` clips will do more than
+any threshold change.
 
 ## Stage 7 — Phrases: gloss to English ✅ **done**
 
@@ -455,9 +502,71 @@ rough edge.
 | 3 — movement | ✅ done, 41 offline tests |
 | 4 — collection | ✅ tool built, 26 offline tests — **data not yet collected** |
 | 5 — classifier | ⚙️ script ready, 21 offline tests — **blocked on data** |
-| 6 — continuous signing | next buildable stage |
+| 6 — continuous signing | ✅ done, 26 offline tests |
 | 7 — gloss → English | ✅ done, 37 offline tests |
 | 8 — non-manual markers | last |
 
 `main` is untouched and still runs. Veronica adds files rather than rewriting
 them until stage 4, so the thesis basis stays demonstrable throughout.
+
+---
+
+## Testing locally
+
+Nothing below needs a trained model. The point of running it now is that the
+parts which can only be judged in front of a real camera should be judged
+*before* a collection session, not after.
+
+### 1. Install and check
+
+```bash
+pip install -r requirements.txt
+curl -LO https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite
+python check_setup.py
+```
+
+`check_setup.py` verifies packages and model files, runs the 266 offline tests,
+opens the camera, and then checks the two things that do not announce
+themselves when they are wrong:
+
+- **Pipeline throughput.** It reports fps with *both* models running and fails
+  below 11fps. That floor is derived twice over — from `motion.py`'s window in
+  `NOTES.md`, and independently from `SignBuffer.min_samples`. Below it, no
+  clip can be assembled and no motion letter can fire.
+- **The handedness convention.** It asks you to hold up your right hand and
+  reports what MediaPipe called it. If that comes back `Left`, every hand in
+  your dataset would be labelled backwards, trained on happily, with features
+  that stay entirely plausible. The fix is one flag
+  (`mirrored_input=False`), and it is much cheaper now than after a session.
+
+### 2. Watch the layers run
+
+```bash
+python demo_veronica.py            # add --dominant left if that is you
+```
+
+Recognition is idle without a model, but everything under it is live. Press `D`
+and you get fps, the reported handedness, the buffer filling, the confidence
+reading, and the named location zone each hand is in — forehead, mouth/chin,
+neck/shoulder, chest. Move a hand from your forehead to your chin and watch the
+zone change: that is stage 2 working, and it is the difference between FATHER
+and MOTHER being separable or not.
+
+### 3. Then collect
+
+```bash
+python collect_signs.py            # SPACE start/stop, U undo, F readout
+python rebuild_signs.py --check    # what is collected, what is missing
+python train_signs.py              # once two people have signed the same signs
+```
+
+### What "working" looks like before any data exists
+
+| Check | Expect |
+| --- | --- |
+| `check_setup.py` | all pass; fps comfortably above 15 |
+| Right hand raised | reported as `Right` |
+| Both hands up | `hands: 2` in the demo HUD |
+| Face in frame | green box, `face: yes` |
+| Hand at forehead vs chin | the zone in the `D` readout changes |
+| Hands dropped out of frame | buffer empties, nothing commits |
