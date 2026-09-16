@@ -6,9 +6,9 @@
 # still comes from running evaluate.py by hand.
 #
 # No pip install step on purpose -- the test modules import only debouncer.py,
-# dataset.py, motion.py, hands.py, location.py and sequence.py plus the
-# standard library, so they need neither MediaPipe nor scikit-learn and finish
-# in seconds. Keeping those six dependency-free is what keeps this job honest;
+# dataset.py, motion.py, hands.py, location.py, sequence.py and signset.py
+# plus the standard library, so they need neither MediaPipe nor scikit-learn
+# and finish in seconds. Keeping those seven dependency-free keeps this honest;
 # a numpy import in any of them silently turns this into a no-op.
 
 name: tests

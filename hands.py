@@ -325,6 +325,25 @@ def assign_hands(detected, signer_dominant=RIGHT, mirrored_input=True):
     return dominant, nondominant
 
 
+def canonical_scene(detected, face=None, signer_dominant=RIGHT,
+                    mirrored_input=True):
+    """(dominant, nondominant, face), all in right-dominant space.
+
+    The one entry point that should be used to turn a frame of detections into
+    something the feature layer can consume, because the hands and the face
+    have to be reflected *together*. Mirroring a left-dominant signer's hands
+    via assign_hands() while leaving the face box alone measures the hands in
+    one reflection and the body reference in the other: every location feature
+    comes out wrong by twice the head's offset from the axis. Nothing
+    downstream can detect that -- the numbers stay entirely plausible -- so the
+    two mirrorings are bound together here rather than left to each caller.
+    """
+    dominant, nondominant = assign_hands(detected, signer_dominant, mirrored_input)
+    if signer_dominant == LEFT:
+        face = location.mirror_face(face)
+    return dominant, nondominant, face
+
+
 # ── schema ─────────────────────────────────────────────────────────────────
 def _hand_columns(prefix):
     columns = [f"{prefix}_present"]

@@ -208,37 +208,106 @@ the only thing that knows it moved. This is why the wrist anchors are passed
 into `SignBuffer.add()` separately rather than read back out of the features,
 and it is pinned down by its own test.
 
-## Stage 4 — Collection 🔒 *gated on 1–3 being frozen*
+## Stage 4 — Collection ✅ **tool built, data not yet collected**
 
-The expensive, hard-to-repeat step. Everything above exists to make sure this
-happens once.
+`collect_signs.py`, `signset.py`, `rebuild_signs.py`, `test_signset.py`.
 
-- Record **sequences**, not frames. A row becomes a clip.
-- Ask for the signer's **dominant hand**, alongside the name `collect_data.py`
-  already asks for.
-- Start from a **realistic vocabulary**: 50–100 signs of everyday
-  conversational ASL, chosen for usefulness rather than for ease of
-  recognition. Full ASL is tens of thousands of signs; a defensible thesis
-  result is a real, honestly-measured vocabulary, not a claim to cover the
-  language.
-- Keep `main`'s collection lesson: **~100 examples per sign per person, then
-  recruit the next person.** Rows saturate; people do not.
-- **Recruit a Deaf or fluent signer if at all possible.** Every number in this
-  repo so far comes from hearing team members performing signs. That is fine
-  for letters and misleading for phrases — fluent signing differs in timing,
-  amplitude and coarticulation, which is exactly what stages 3 and 6 model.
+The expensive, hard-to-repeat step. Everything above exists so it happens once.
 
-The three custom word signs on `main` (`HELLO`, `IHATEYOU`) should be
-**replaced by their real ASL forms** here, since Veronica can represent
-movement. `README.md` currently has to carry an academic-honesty note saying
-they are self-chosen handshapes rather than real ASL. That note should become
-unnecessary.
+```bash
+python collect_signs.py       # SPACE to start/stop a clip, U to undo a fluffed take
+python rebuild_signs.py       # regenerate the training CSV from the archive
+python rebuild_signs.py --check   # what has been collected, what is missing
+```
 
-Veronica writes a **new file**, not a wider `landmark_data.csv`. The historical
-rows cannot supply orientation — it was discarded before anything reached disk
-(there is a test pinning that down). Widening the old file would mean 24,496
-rows with a silently-imputed parameter. The letter model keeps its file and its
-84%, and becomes the fingerspelling component rather than being thrown away.
+### Collect raw, derive features
+
+Collection writes **two** files:
+
+| File | What it is |
+| --- | --- |
+| `veronica_clips.jsonl` | raw landmarks, one clip per line — **the archive** |
+| `veronica_signs.csv` | the 371-float training rows — **derived, regenerable** |
+
+Sequencing stages 1–3 before collection protected the signers' time exactly
+once. The next time `sequence.py`'s keyframe counts are revisited — and stages
+5–8 will revisit them — feature-only rows would all be invalid and the sessions
+would have to happen again. Keeping the raw landmarks makes that a script run.
+
+The letter dataset learned this in reverse: `normalize_landmarks()` ran before
+anything reached disk, so orientation is gone from those 24,496 rows for good
+and no script can recover it. **The archive is the record; the CSV is a build
+artifact.** Measured at ~6x the CSV, and it is JSON Lines of short repeated
+keys, which is near the best case for the compression git already applies.
+
+### What the tool does differently from `collect_data.py`
+
+- **One clip per sign attempt**, not one row per frame. A letter is a held
+  pose; a sign is a path.
+- **`num_hands=2`**, and it asks for the signer's **dominant hand** — a
+  left-dominant signer's scene is mirrored into right-dominant space, and
+  getting that wrong is undetectable downstream.
+- **Refuses to start without the face detector** unless you pass `--no-face`.
+  Collecting a whole session without location data by accident is expensive
+  enough to be worth a hard stop rather than a warning. Download
+  `blaze_face_short_range.tflite` into the repo directory; the error message
+  carries the URL.
+- **Rejects takes too short to be a sign**, using `SignBuffer`'s own floors, so
+  anything saved is something the live pipeline could also have classified.
+- **`U` undoes the last clip**, truncating both files to recorded offsets.
+  Fluffed takes are common and the alternative is keeping known-bad data.
+- **`F` shows a live readout** — reported handedness, which hand is dominant,
+  and the named location zone. **Press it and confirm your right hand reads as
+  right before starting a real session**; this is where the mirror hazard from
+  stage 1 gets caught or gets baked into the dataset.
+- **Flags low face coverage** per clip rather than dropping it — filtering
+  later is easy, losing a good take is not.
+
+### What to tell the signer
+
+The letter collector's advice was counter-intuitive because the hand frame
+erased most apparent variation. **That is no longer true**: the vector now
+carries orientation, face-relative location and the whole trajectory, so most
+real variation reaches the features. Sign at natural speed and amplitude.
+
+The one piece that still holds: **position in the frame and distance from the
+camera are still normalized away**, now against the face. Shifting around in
+your chair contributes nothing.
+
+And the lesson that has held throughout: **more people, not more clips per
+person.** A fourth signer was worth +4.7 points on the letter dataset while
+tripling the rows from existing signers was worth nothing. `SUGGESTED_CLIPS` is
+20 per sign per person — far below the old 100 rows/label, because a clip is a
+separate attempt where frames within a burst were near-duplicates.
+
+### The vocabulary
+
+68 glosses in `signset.VOCABULARY`, grouped by category and freely editable —
+nothing downstream knows the particular strings, exactly as `collect_data.py`'s
+`WORDS` list works today. Two are worth keeping if you edit it:
+
+- **MOTHER and FATHER**, which differ only in location and are therefore the
+  working check that stage 2 earns its place.
+- **`_REST`**, a not-signing class. Two minutes at collection time; stage 5
+  needs something to reject garbage with and stage 6 has to tell "between
+  signs" from "a sign" with nobody pressing a key. Collecting it later means
+  another session with every signer.
+
+Glosses only. **How each sign is formed is not encoded anywhere in the repo**
+and should come from a dictionary and a fluent signer.
+
+The custom `HELLO` / `IHATEYOU` handshapes from `main` are **not** carried over
+— Veronica can represent movement, so the real ASL forms are collectable and
+the academic-honesty note in `README.md` stops being necessary.
+
+### Still to do before a real session
+
+1. **Download `blaze_face_short_range.tflite`.** The tool stops without it.
+2. **Verify handedness on camera** (press `F`). The stage 1 hazard.
+3. **Recruit a fluent signer.** Every number in this repo so far comes from
+   hearing team members performing signs — fine for letters, misleading for
+   phrases, since fluent signing differs in timing and coarticulation, which is
+   exactly what stages 3 and 6 model.
 
 ## Stage 5 — Classifier and honest evaluation
 
@@ -307,8 +376,8 @@ rough edge.
 | 1 — two hands, orientation | ✅ done, 38 offline tests |
 | 2 — location / body anchor | ✅ done, 25 offline tests (face detector chosen) |
 | 3 — movement | ✅ done, 41 offline tests |
-| 4 — collection | **next** — 1–3 are frozen, so the schema is settled |
-| 5 — classifier | after 4 |
+| 4 — collection | ✅ tool built, 26 offline tests — **data not yet collected** |
+| 5 — classifier | blocked on stage 4 data |
 | 6 — continuous signing | after 5 |
 | 7 — gloss → English | after 5 |
 | 8 — non-manual markers | last |

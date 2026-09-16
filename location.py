@@ -90,6 +90,22 @@ def face_from_normalized_box(x, y, width, height, frame_w, frame_h):
     return face_from_box(x * frame_w, y * frame_h, width * frame_w, height * frame_h)
 
 
+def mirror_face(face):
+    """Reflect a face box about the vertical axis, to match hands.mirror_scene().
+
+    Needed because mirroring a left-dominant signer's hands into right-dominant
+    space without mirroring the face too would measure the hands in one
+    reflection and the body reference in the other. Every location feature
+    would then be wrong by twice the head's offset from the axis -- large,
+    systematic, and invisible in the output, since the numbers stay perfectly
+    plausible. hands.canonical_scene() is what makes the pair inseparable.
+    """
+    if face is None:
+        return None
+    cx, cy, width, height = face
+    return (-cx, cy, width, height)
+
+
 def locate(point, face):
     """Where `point` sits relative to the face, in face-widths.
 

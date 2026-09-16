@@ -135,7 +135,7 @@ class TestOfflineModulesStayDependencyFree(unittest.TestCase):
     """
 
     OFFLINE_MODULES = ["dataset", "debouncer", "motion",
-                       "hands", "location", "sequence"]
+                       "hands", "location", "sequence", "signset"]
     HEAVY = {"numpy", "pandas", "cv2", "mediapipe", "sklearn",
              "joblib", "symspellpy", "scipy", "torch", "tensorflow"}
 
