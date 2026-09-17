@@ -419,6 +419,7 @@ def save_clip(clip, clips_file, csv_file, undo_stack):
                        f"{signset.clip_span_ms(clip)}ms, not saved"), (0, 0, 255)
 
     coverage = signset.face_coverage(clip)
+    tracked = signset.hand_coverage(clip)
     row = signset.clip_to_row(clip)
 
     # Offsets before writing, so U can truncate both files back exactly.
@@ -431,10 +432,14 @@ def save_clip(clip, clips_file, csv_file, undo_stack):
     csv_file.write(",".join(str(v) for v in row) + "\n")
     csv_file.flush()
 
+    if tracked < signset.MIN_HAND_COVERAGE:
+        return True, (f"saved, but hands tracked in only {tracked:.0%} of "
+                      f"frames -- retake"), (0, 165, 255)
     if coverage < signset.MIN_FACE_COVERAGE:
         return True, (f"saved, but face seen in only {coverage:.0%} of frames "
                       f"-- consider a retake"), (0, 165, 255)
-    return True, f"saved {clip['label']}  ({len(samples)} frames)", (0, 220, 0)
+    return True, (f"saved {clip['label']}  ({len(samples)} frames, "
+                  f"{tracked:.0%} tracked)"), (0, 220, 0)
 
 
 def undo_last(undo_stack, clips_file, csv_file, state):

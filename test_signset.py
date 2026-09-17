@@ -424,3 +424,80 @@ class TestConfigFile(unittest.TestCase):
             with open(path, "w") as fh:
                 json.dump({"mirrored_input": False, "nonsense": 1}, fh)
             self.assertEqual(config.load(path), {"mirrored_input": False})
+
+
+class TestJitterSmoothing(unittest.TestCase):
+    """A 3-point median: the median of three monotonically changing samples is
+    the middle sample, so steady movement passes through untouched and only a
+    sample disagreeing with both neighbours is replaced."""
+
+    def spike(self, at, size=0.25):
+        source = clip(two_handed=False)
+        source["frames"][at]["hands"][0]["points"] = [
+            [x + size, y] for x, y in
+            source["frames"][at]["hands"][0]["points"]]
+        return source
+
+    def test_a_single_frame_spike_is_removed(self):
+        spiked = self.spike(6)
+        before = spiked["frames"][6]["hands"][0]["points"][0][0]
+        after = signset.smooth_points(
+            spiked["frames"])[6]["hands"][0]["points"][0][0]
+        self.assertLess(abs(after - before), 0.25)
+
+    def test_steady_movement_passes_through_unchanged(self):
+        # The property that makes a median safe where an average is not: a
+        # fast sign must not be blunted to buy spike protection.
+        source = clip(two_handed=False)
+        smoothed = signset.smooth_points(source["frames"])
+        for original, filtered in zip(source["frames"][1:-1], smoothed[1:-1]):
+            self.assertLess(
+                max_diff([c for p in original["hands"][0]["points"] for c in p],
+                         [c for p in filtered["hands"][0]["points"] for c in p]),
+                1e-9)
+
+    def test_peak_speed_survives_smoothing(self):
+        fast = clip(two_handed=False, duration_ms=300)
+        summary = sequence.movement_summary(
+            sequence.trajectory(signset.clip_to_samples(fast), "dom")[0])
+        self.assertGreater(summary[6], 1.0)
+
+    def test_endpoints_are_left_alone(self):
+        source = clip(two_handed=False)
+        smoothed = signset.smooth_points(source["frames"])
+        self.assertEqual(smoothed[0]["hands"][0]["points"],
+                         source["frames"][0]["hands"][0]["points"])
+
+    def test_a_short_clip_is_not_smoothed(self):
+        source = clip(two_handed=False, frames=2)
+        self.assertEqual(signset.smooth_points(source["frames"]),
+                         source["frames"])
+
+    def test_smoothing_survives_frames_with_no_hands(self):
+        source = clip(two_handed=False)
+        source["frames"][5]["hands"] = []
+        smoothed = signset.smooth_points(source["frames"])
+        self.assertEqual(smoothed[5]["hands"], [])
+
+
+class TestHandCoverage(unittest.TestCase):
+
+    def test_a_clean_clip_is_fully_covered(self):
+        self.assertEqual(signset.hand_coverage(clip()), 1.0)
+
+    def test_dropouts_lower_it(self):
+        source = clip()
+        for f in source["frames"][:3]:
+            f["hands"] = []
+        self.assertAlmostEqual(signset.hand_coverage(source), 0.75, places=6)
+
+    def test_it_is_recorded_as_metadata(self):
+        source = clip()
+        for f in source["frames"][:3]:
+            f["hands"] = []
+        row = dict(zip(signset.HEADER, signset.clip_to_row(source)))
+        self.assertLess(row["hand_coverage"], 1.0)
+
+    def test_an_empty_clip_has_no_coverage(self):
+        empty = signset.raw_clip("x", "A", "p", hands.RIGHT, 1, 1, [])
+        self.assertEqual(signset.hand_coverage(empty), 0.0)

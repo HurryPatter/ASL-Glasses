@@ -88,7 +88,8 @@ SIGNS = [sign for group in VOCABULARY.values() for sign in group]
 # traced back to the exact clip in the archive -- without it, a class that
 # trains badly is a mystery rather than a recording to go and look at.
 META_COLUMNS = ["clip_id", "label", "person", "dominant", "mirrored_input",
-                "n_frames", "clip_ms", "face_coverage", "handedness_stability"]
+                "n_frames", "clip_ms", "face_coverage", "hand_coverage",
+                "handedness_stability"]
 HEADER = META_COLUMNS + sequence.SIGN_COLUMNS
 
 # Below this, the clip has no usable location data for most of its span, so
@@ -101,6 +102,11 @@ MIN_FACE_COVERAGE = 0.5
 # at for a good part of the clip. Stabilisation repairs the identity, but a
 # clip this unstable usually also has poor tracking underneath it.
 MIN_HANDEDNESS_STABILITY = 0.8
+
+# Below this the tracker lost the hands for most of the clip. Gap bridging
+# repairs the geometry either side of a dropout, but it cannot invent the part
+# of the sign nobody saw.
+MIN_HAND_COVERAGE = 0.7
 
 _COORD_PLACES = 4      # ~0.06px on a 640px frame; far finer than the tracker
 
@@ -261,6 +267,82 @@ def handedness_stability(clip):
     return stabilized_frames(clip)[1]
 
 
+# ── jitter ─────────────────────────────────────────────────────────────────
+# MediaPipe's landmark estimates wobble frame to frame, worst under motion blur
+# and self-occlusion -- which is to say, worst during movement, which is the
+# thing being measured. The wobble goes straight into the shape features, where
+# it is indistinguishable from a real change of handshape.
+#
+# A 3-point **median** rather than an average, and that choice is the whole
+# reason this is safe. The median of three monotonically changing samples IS
+# the middle sample, so a hand moving steadily passes through completely
+# unchanged -- no lag, no attenuation of a fast sign. Only a sample that
+# disagrees with both of its neighbours gets replaced, which is exactly the
+# definition of a spike. An average would blunt every fast movement to buy the
+# same protection.
+#
+# It runs at reconstruction rather than at capture, so the archive keeps the
+# raw landmarks and the window can be retuned later from the same recordings.
+SMOOTHING_WINDOW = 3
+
+
+def _median(values):
+    ordered = sorted(values)
+    return ordered[len(ordered) // 2]
+
+
+def smooth_points(frames, window=SMOOTHING_WINDOW):
+    """Median-filter each tracked hand's landmarks along time.
+
+    Hands are followed by track, so a hand entering or leaving the frame never
+    has its points averaged against the other hand's.
+    """
+    if window < 3 or len(frames) < window:
+        return frames
+
+    tracks, assignment = _track_hands(frames)
+    half = window // 2
+
+    # Gather each track's points per frame index, so neighbours in time can be
+    # found without re-matching.
+    series = [{} for _ in tracks]
+    for index, taken in enumerate(assignment):
+        for hand_index, track_index in taken.items():
+            series[track_index][index] = frames[index]["hands"][hand_index]["points"]
+
+    out = []
+    for index, frame in enumerate(frames):
+        rebuilt = []
+        for hand_index, hand in enumerate(frame.get("hands", [])):
+            track_index = assignment[index].get(hand_index)
+            points = hand["points"]
+            if track_index is not None:
+                neighbours = [series[track_index][j]
+                              for j in range(index - half, index + half + 1)
+                              if j in series[track_index]]
+                if len(neighbours) >= 3:
+                    points = [[_median([n[p][0] for n in neighbours]),
+                               _median([n[p][1] for n in neighbours])]
+                              for p in range(len(points))]
+            rebuilt.append({"label": hand["label"], "points": points})
+        copy = dict(frame)
+        copy["hands"] = rebuilt
+        out.append(copy)
+    return out
+
+
+def hand_coverage(clip):
+    """Fraction of frames in which any hand was tracked at all.
+
+    Recorded per clip because a clip the tracker mostly lost is not a clip of a
+    sign, however long it ran.
+    """
+    frames = clip.get("frames") or []
+    if not frames:
+        return 0.0
+    return sum(1 for f in frames if f.get("hands")) / len(frames)
+
+
 # ── reconstruction: archive -> training row ────────────────────────────────
 def clip_to_samples(clip, mirrored_input=None):
     """Rebuild the per-frame Sample stream from an archived clip.
@@ -280,6 +362,7 @@ def clip_to_samples(clip, mirrored_input=None):
         mirrored_input = clip.get("mirrored_input", True)
 
     frames, _ = stabilized_frames(clip)
+    frames = smooth_points(frames)
 
     samples = []
     for frame in frames:
@@ -335,6 +418,7 @@ def clip_to_row(clip, mirrored_input=None):
         len(clip.get("frames") or []),
         clip_span_ms(clip),
         round(face_coverage(clip), 4),
+        round(hand_coverage(clip), 4),
         round(handedness_stability(clip), 4),
     ] + sequence.sign_vector(samples)
 

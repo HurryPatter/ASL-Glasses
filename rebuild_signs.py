@@ -48,12 +48,15 @@ def main():
     rows = []
     thin_face = []
     unstable = []
+    poorly_tracked = []
     for clip in clips:
         rows.append(signset.clip_to_row(clip, mirrored_input=override))
         if signset.face_coverage(clip) < signset.MIN_FACE_COVERAGE:
             thin_face.append(clip["clip_id"])
         if signset.handedness_stability(clip) < signset.MIN_HANDEDNESS_STABILITY:
             unstable.append(clip["clip_id"])
+        if signset.hand_coverage(clip) < signset.MIN_HAND_COVERAGE:
+            poorly_tracked.append(clip["clip_id"])
 
     if override is not None:
         print(f"Overriding the recorded convention: mirrored_input={override}")
@@ -88,6 +91,13 @@ def main():
     if missing:
         print(f"\n  Never recorded ({len(missing)}): {', '.join(missing[:15])}"
               f"{' ...' if len(missing) > 15 else ''}")
+
+    if poorly_tracked:
+        print(f"\n  Poor hand tracking ({len(poorly_tracked)}): the tracker "
+              f"lost the hands for\n  much of these signs. Usable, but they are "
+              f"the weakest rows in the set.")
+        print(f"  {', '.join(poorly_tracked[:8])}"
+              f"{' ...' if len(poorly_tracked) > 8 else ''}")
 
     if unstable:
         print(f"\n  Unstable handedness ({len(unstable)}): MediaPipe disagreed "

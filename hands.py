@@ -361,6 +361,18 @@ FEATURE_COLUMNS = (
 )
 
 
+# Each block, as (start, length, presence_index). Every block leads with its
+# own presence flag, so a consumer can tell "this was not tracked in this
+# frame" from "this was tracked and happens to read zero" -- and, with these,
+# can repair a gap in one block without touching the others.
+BLOCKS = [
+    (DOMINANT_OFFSET, PER_HAND_FLOATS, DOMINANT_OFFSET),
+    (NONDOMINANT_OFFSET, PER_HAND_FLOATS, NONDOMINANT_OFFSET),
+    (RELATIONAL_OFFSET, RELATIONAL_FLOATS, RELATIONAL_OFFSET),
+    (LOCATION_OFFSET, LOCATION_FLOATS, LOCATION_OFFSET),
+]
+
+
 # ── which floats move, and which hold still ────────────────────────────────
 # Stage 3 samples a clip at keyframes, and sampling every float at the same
 # rate wastes most of them. A sign's handshape is near-constant -- most signs

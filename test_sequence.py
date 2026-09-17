@@ -367,3 +367,71 @@ class TestSignBuffer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTrackingGaps(unittest.TestCase):
+    """MediaPipe drops hands, and does it most during fast movement -- so
+    dropouts cluster inside the gesture rather than spreading evenly."""
+
+    def test_a_gap_no_longer_blends_toward_an_empty_hand(self):
+        # Without bridging, a keyframe near a gap interpolates between a real
+        # hand and an all-zero block: a half-scale hand at an impossible
+        # position, blended out of a pose and an absence.
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.5,))
+        filled = sequence.bridge_gaps(samples)
+
+        gap = next(i for i, s in enumerate(samples)
+                   if s.features[hands.DOMINANT_OFFSET] == 0.0)
+        shape = slice(hands.DOMINANT_OFFSET + 1,
+                      hands.DOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        self.assertEqual(set(samples[gap].features[shape]), {0.0})
+        self.assertNotEqual(set(filled[gap][shape]), {0.0})
+
+    def test_the_held_geometry_is_the_last_one_actually_seen(self):
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.5,))
+        filled = sequence.bridge_gaps(samples)
+        gap = next(i for i, s in enumerate(samples)
+                   if s.features[hands.DOMINANT_OFFSET] == 0.0)
+        shape = slice(hands.DOMINANT_OFFSET + 1,
+                      hands.DOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        self.assertEqual(filled[gap][shape], filled[gap - 1][shape])
+
+    def test_presence_flags_still_tell_the_truth(self):
+        # The flag is deliberately not filled: after resampling it comes out
+        # fractional across a gap, which is the signal that a stretch was
+        # interpolated and should be trusted less.
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.5,))
+        filled = sequence.bridge_gaps(samples)
+        flags = [v[hands.DOMINANT_OFFSET] for v in filled]
+        self.assertIn(0.0, flags)
+
+    def test_a_gap_at_the_very_start_takes_the_first_real_geometry(self):
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.0,))
+        filled = sequence.bridge_gaps(samples)
+        shape = slice(hands.DOMINANT_OFFSET + 1,
+                      hands.DOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        self.assertNotEqual(set(filled[0][shape]), {0.0})
+        self.assertEqual(filled[0][shape], filled[1][shape])
+
+    def test_a_clean_clip_is_untouched(self):
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE)
+        for sample, filled in zip(samples, sequence.bridge_gaps(samples)):
+            self.assertEqual(list(sample.features), filled)
+
+    def test_a_dropout_barely_moves_the_sign_vector(self):
+        # The payoff: a clip with a hole in it should still describe the same
+        # sign, because the geometry either side of the hole is real.
+        clean = sequence.sign_vector(clip(STRAIGHT_DOWN, 800, 30.0, face=FACE))
+        holed = sequence.sign_vector(
+            clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.4, 0.5)))
+        self.assertLess(max_diff(clean, holed), 0.35)
+
+    def test_a_hand_that_is_never_seen_stays_absent(self):
+        # Bridging must not invent a hand that was not in the clip at all.
+        vector = sequence.sign_vector(clip(STRAIGHT_DOWN, 800, 30.0, face=FACE))
+        block = slice(hands.NONDOMINANT_OFFSET,
+                      hands.NONDOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        self.assertEqual(set(vector[0:0]) | {0.0}, {0.0})
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE)
+        for filled in sequence.bridge_gaps(samples):
+            self.assertEqual(set(filled[block]), {0.0})

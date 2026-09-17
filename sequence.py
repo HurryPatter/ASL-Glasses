@@ -111,6 +111,50 @@ def _median(values):
     return ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
+# ── tracking gaps ──────────────────────────────────────────────────────────
+def bridge_gaps(samples):
+    """Feature vectors with each block's geometry held across frames where it
+    was not tracked.
+
+    MediaPipe drops hands. It does so most on exactly the frames a sign needs
+    most -- fast movement blurs the image, and a hand that turns or crosses the
+    other one occludes itself -- so dropouts are not uniformly distributed
+    noise, they cluster inside the gesture.
+
+    Without this, a keyframe landing near a gap interpolates between a real
+    hand and an all-zero block, producing a half-scale hand at some impossible
+    position: a pose nobody made, blended out of a pose and an absence. Holding
+    the last tracked geometry instead means the vector says "the hand was here,
+    and we stopped seeing it" rather than "the hand shrank toward the origin".
+
+    The presence flags themselves are **not** filled. They keep telling the
+    truth, and after resampling they come out fractional across a gap, which is
+    exactly the signal a classifier should get: this stretch was interpolated,
+    trust it less.
+    """
+    vectors = [list(s.features) for s in samples]
+    for start, length, flag in hands.BLOCKS:
+        body = slice(start + 1, start + length)
+
+        last = None
+        for vector in vectors:
+            if vector[flag]:
+                last = vector[body]
+            elif last is not None:
+                vector[body] = last
+
+        # Frames before the first sighting have nothing behind them to hold,
+        # so they take the first geometry that does arrive.
+        following = None
+        for vector in reversed(vectors):
+            if vector[flag]:
+                following = vector[body]
+            elif following is not None and not any(vector[body]):
+                vector[body] = following
+
+    return vectors
+
+
 # ── resampling ─────────────────────────────────────────────────────────────
 def resample(samples, k):
     """k frame vectors at evenly spaced times across the clip.
@@ -122,10 +166,11 @@ def resample(samples, k):
     """
     if not samples:
         return []
+    filled = bridge_gaps(samples)
     if len(samples) == 1 or samples[-1].t <= samples[0].t:
-        return [list(samples[0].features) for _ in range(k)]
+        return [list(filled[0]) for _ in range(k)]
     if k == 1:
-        return [list(samples[0].features)]
+        return [list(filled[0])]
 
     start, end = samples[0].t, samples[-1].t
     out = []
@@ -134,11 +179,11 @@ def resample(samples, k):
         target = start + (end - start) * i / (k - 1)
         while cursor + 2 < len(samples) and samples[cursor + 1].t < target:
             cursor += 1
-        left, right = samples[cursor], samples[cursor + 1]
-        span = right.t - left.t
-        ratio = 0.0 if span <= 0 else _clamp((target - left.t) / span, 0.0, 1.0)
+        span = samples[cursor + 1].t - samples[cursor].t
+        ratio = 0.0 if span <= 0 else _clamp(
+            (target - samples[cursor].t) / span, 0.0, 1.0)
         blended = [a + (b - a) * ratio
-                   for a, b in zip(left.features, right.features)]
+                   for a, b in zip(filled[cursor], filled[cursor + 1])]
         out.append(_renormalize_unit_pairs(blended))
     return out
 

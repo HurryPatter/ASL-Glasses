@@ -141,12 +141,25 @@ def summarise(rows):
     for person in sorted(people):
         print(f"  {person:<18} {people[person]}")
 
-    stability = [float(r["handedness_stability"]) for r in rows
-                 if r.get("handedness_stability")]
-    coverage = [float(r["face_coverage"]) for r in rows if r.get("face_coverage")]
-    if coverage:
-        print(f"\n  face coverage:        min {min(coverage):.0%}, "
-              f"mean {mean(coverage):.0%}")
+    def column(name):
+        return [float(r[name]) for r in rows if r.get(name)]
+
+    faces, tracked = column("face_coverage"), column("hand_coverage")
+    stability = column("handedness_stability")
+    if faces:
+        print(f"\n  face coverage:        min {min(faces):.0%}, "
+              f"mean {mean(faces):.0%}")
+    if tracked:
+        print(f"  hand tracking:        min {min(tracked):.0%}, "
+              f"mean {mean(tracked):.0%}")
+        poor = [r["clip_id"] for r in rows
+                if float(r.get("hand_coverage", 1)) < 0.7]
+        if poor:
+            print(f"    {len(poor)} clip(s) below 70% -- the tracker lost the "
+                  f"hands for much of\n    the sign. Gap bridging repairs the "
+                  f"geometry either side of a dropout,\n    but it cannot "
+                  f"invent the part nobody saw. Worth re-recording:")
+            print(f"    {', '.join(poor[:6])}{' ...' if len(poor) > 6 else ''}")
     if stability:
         print(f"  handedness stability: min {min(stability):.0%}, "
               f"mean {mean(stability):.0%}")
