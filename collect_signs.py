@@ -35,6 +35,7 @@ signers was worth nothing.
 Controls:
   [ / ]   = previous / next sign          , / . = jump a category
   SPACE   = start / stop recording a clip
+  C       = countdown, then record hands-free (for two-handed signs)
   U       = undo the last clip
   F       = toggle the feature/diagnostic readout
   Q       = quit
@@ -63,6 +64,12 @@ FACE_MODEL = capture.FACE_MODEL
 # Clips are far more independent than frames were -- each is a separate
 # attempt -- so this number is much smaller than the old 100 rows/label.
 SUGGESTED_CLIPS = 20
+
+# Hands-free recording (C). Two-handed signs need both hands up, which leaves
+# nobody to press a key -- so arm it, get into position, and it starts and
+# stops on its own.
+COUNTDOWN_MS = 3000
+AUTO_CLIP_MS = 2000
 
 FACE_HELP = f"""
 {FACE_MODEL} not found.
@@ -108,7 +115,8 @@ def ask_dominant():
 
 
 def draw(frame, detected, face_box, state):
-    h, w = frame.shape[:2]
+    height, width = frame.shape[:2]
+    h, w = height, width
     for points, label in detected:
         colour = (0, 255, 255) if label == hands.RIGHT else (255, 200, 0)
         for x, y in points:
@@ -142,11 +150,17 @@ def draw(frame, detected, face_box, state):
         cv2.putText(frame, f"{state['frames']} frames / {state['span_ms']}ms",
                     (10, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
 
+    remaining = state.get("countdown_until")
+    if remaining is not None:
+        seconds = max(0, int((remaining - state["now_ms"]) / 1000) + 1)
+        cv2.putText(frame, str(seconds), (int(width / 2) - 40, int(height / 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 4.0, (0, 220, 220), 6)
+
     if state["message"]:
         cv2.putText(frame, state["message"], (10, h - 90),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, state["message_colour"], 2)
 
-    cv2.putText(frame, "[ ] sign   , . category   SPACE rec   U undo   F info   Q quit",
+    cv2.putText(frame, "[ ] sign  , . category  SPACE rec  C countdown  U undo  F info  Q quit",
                 (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
 
@@ -235,6 +249,7 @@ def main():
         "label": labels[0], "index": 0, "total": len(labels),
         "category": category_of(0), "person": person, "dominant": dominant_hand,
         "recording": False, "counts": {}, "total_clips": 0,
+        "countdown_until": None, "stop_at": None,
         "frames": 0, "span_ms": 0, "message": "", "message_colour": (200, 200, 200),
     }
 
@@ -242,6 +257,21 @@ def main():
         state["message"] = text
         state["message_colour"] = colour
         print(text)
+
+    def finish_clip():
+        """Stop recording and save. Shared by SPACE and the countdown."""
+        state["recording"] = False
+        state["stop_at"] = None
+        clip = signset.raw_clip(
+            f"{person}-{session}-{state['total_clips'] + 1}",
+            state["label"], person, dominant_hand,
+            frame_w, frame_h, clip_frames, mirrored_input=mirrored)
+        saved, note, colour = save_clip(clip, clips_file, csv_file, undo_stack)
+        if saved:
+            state["counts"][state["label"]] = \
+                state["counts"].get(state["label"], 0) + 1
+            state["total_clips"] += 1
+        return note, colour
 
     session = int(time.time())
     clip_frames = []
@@ -279,12 +309,25 @@ def main():
                     face_detector.detect_for_video(image, timestamp_ms),
                     frame_w, frame_h)
 
+            event = due(state, timestamp_ms)
+            if event == "start":
+                state["countdown_until"] = None
+                clip_frames = []
+                clip_start_ms = timestamp_ms
+                state["recording"] = True
+                state["stop_at"] = timestamp_ms + AUTO_CLIP_MS
+                state["frames"] = state["span_ms"] = 0
+                say(f"recording {state['label']}...", (0, 220, 0))
+            elif event == "stop":
+                say(*finish_clip())
+
             if state["recording"]:
                 clip_frames.append(signset.raw_frame(
                     detected, face_box, timestamp_ms - clip_start_ms))
                 state["frames"] = len(clip_frames)
                 state["span_ms"] = clip_frames[-1]["t"]
 
+            state["now_ms"] = timestamp_ms
             draw(frame, detected, face_box, state)
             if show_readout:
                 draw_readout(frame, detected, face_box, dominant_hand,
@@ -295,7 +338,12 @@ def main():
             if key == ord('q'):
                 break
 
+            elif key == ord('c') and not state["recording"]:
+                state["countdown_until"] = timestamp_ms + COUNTDOWN_MS
+                say(f"get into position for {state['label']}...", (0, 220, 220))
+
             elif key == ord(' '):
+                state["countdown_until"] = None
                 if not state["recording"]:
                     clip_frames = []
                     clip_start_ms = timestamp_ms
@@ -303,19 +351,7 @@ def main():
                     state["frames"] = state["span_ms"] = 0
                     say(f"recording {state['label']}...", (0, 220, 0))
                 else:
-                    state["recording"] = False
-                    clip = signset.raw_clip(
-                        f"{person}-{session}-{state['total_clips'] + 1}",
-                        state["label"], person, dominant_hand,
-                        frame_w, frame_h, clip_frames,
-                        mirrored_input=mirrored)
-                    saved, note, colour = save_clip(
-                        clip, clips_file, csv_file, undo_stack)
-                    if saved:
-                        state["counts"][state["label"]] = \
-                            state["counts"].get(state["label"], 0) + 1
-                        state["total_clips"] += 1
-                    say(note, colour)
+                    say(*finish_clip())
 
             elif key == ord('u'):
                 say(*undo_last(undo_stack, clips_file, csv_file, state))
@@ -352,6 +388,21 @@ def main():
         cv2.destroyAllWindows()
 
     report(state, person)
+
+
+def due(state, now_ms):
+    """What the countdown timer wants to happen now: 'start', 'stop' or None.
+
+    Split out from the camera loop purely so it can be tested without a
+    camera -- timing bugs here only show up on hardware, which is the worst
+    place to find them.
+    """
+    if state["countdown_until"] is not None and now_ms >= state["countdown_until"]:
+        return "start"
+    if state["recording"] and state["stop_at"] is not None \
+            and now_ms >= state["stop_at"]:
+        return "stop"
+    return None
 
 
 def open_rows_file():
