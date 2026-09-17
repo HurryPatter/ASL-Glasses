@@ -60,7 +60,6 @@ FIXED = {
     "GOODBYE": "goodbye",
     "PLEASE": "please",
     "THANK-YOU": "thank you",
-    "SORRY": "sorry",
     "EXCUSE-ME": "excuse me",
     "NICE-TO-MEET-YOU": "nice to meet you",
     "YES": "yes",
@@ -109,6 +108,9 @@ VERB = {
 }
 
 ADJECTIVE = {
+    # SORRY behaves like an adjective, not a set phrase: ASL's ME SORRY is
+    # "I am sorry", and treating it as fixed produced "Sorry, I."
+    "SORRY": "sorry",
     "GOOD": "good", "BAD": "bad", "HAPPY": "happy", "SAD": "sad",
     "TIRED": "tired", "SICK": "sick", "HUNGRY": "hungry",
     "THIRSTY": "thirsty", "DEAF": "deaf", "HEARING": "hearing",
@@ -417,8 +419,10 @@ def render(tokens, question=False):
     has_clause = any(parsed[key] for key in ("subject", "verb", "adjective",
                                              "objects", "wh"))
     if not has_clause:
-        pieces = [FIXED[t] for t in parsed["fixed"]] + \
-                 [t.title() for t in parsed["spelled"]] + parsed["leftover"]
+        pieces = [FIXED[t] for t in parsed["fixed"]]
+        if parsed["time"]:
+            pieces.append(TIME[parsed["time"]]["en"])
+        pieces += [t.title() for t in parsed["spelled"]] + parsed["leftover"]
         return _capitalize(_join(pieces)) + ("?" if question else ".") \
             if pieces else ""
 
@@ -458,6 +462,8 @@ def _render_statement(parsed, question):
         adjective = ADJECTIVE[parsed["adjective"]]
         if parsed["intensified"]:
             adjective = f"very {adjective}"
+        if not subject_words:
+            return _join([adjective] + tail) + ("?" if question else ".")
         be = _be(parsed, third, pronoun)
         negation = " not" if parsed["negated"] else ""
         if question:
@@ -466,11 +472,21 @@ def _render_statement(parsed, question):
         return _join([subject_words, be + negation, adjective] + tail) + \
             ("?" if question else ".")
 
+    # Pronouns with no predicate to attach them to: English takes the object
+    # forms side by side rather than "I you".
+    if (pronoun and parsed["objects"]
+            and all(o in PRONOUN for o in parsed["objects"])):
+        names = [pronoun["object"]] + [PRONOUN[o]["object"]
+                                       for o in parsed["objects"]]
+        return ", ".join(names + tail) + ("?" if question else ".")
+
     # Subject and objects but no predicate -- most often a possessive phrase
     # ("YOU NAME"), so render the phrase rather than inventing a verb.
     if subject_words and parsed["objects"]:
         if pronoun and parsed["objects"][0] in NOUN:
-            owned = _noun_phrase(parsed["objects"][0], pronoun["possessive"])
+            owned = " and ".join(
+                _noun_phrase(o, pronoun["possessive"]) if o in NOUN
+                else o.lower() for o in parsed["objects"])
             if tail:
                 # "ME NAME O-M-A-R" -- a possessive phrase followed by a
                 # fingerspelled word is an introduction, and English needs the
@@ -481,8 +497,11 @@ def _render_statement(parsed, question):
         return _join([subject_words] + _object_words(parsed, None) + tail) + \
             ("?" if question else ".")
 
-    return _join([subject_words] + _object_words(parsed, None) + tail) + \
-        ("?" if question else ".")
+    objects = _object_words(parsed, None)
+    if not objects and pronoun and not tail:
+        # Nothing to predicate: "Hello, me." rather than "Hello, I."
+        subject_words = pronoun["object"]
+    return _join([subject_words] + objects + tail) + ("?" if question else ".")
 
 
 def _invert(subject_words, parsed, third):

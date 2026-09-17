@@ -256,3 +256,39 @@ class TestGracefulDegradation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCollectedVocabulary(unittest.TestCase):
+    """Cases found by running the first real collected vocabulary through it.
+
+    Every one of these was wrong when the signs actually existed, and none
+    showed up against the hand-written examples -- the lexicon was written
+    before anyone had signed anything.
+    """
+
+    def test_sorry_is_a_predicate_not_a_set_phrase(self):
+        # Read "Sorry, I." while SORRY sat in FIXED.
+        self.assertEqual(render("ME SORRY"), "I am sorry.")
+        self.assertEqual(render("YESTERDAY ME SORRY"), "Yesterday, I was sorry.")
+
+    def test_a_bare_adjective_takes_no_copula(self):
+        self.assertEqual(render("SORRY"), "Sorry.")
+
+    def test_a_time_word_survives_without_a_clause(self):
+        # LATER was dropped entirely: the no-clause path emitted only fixed
+        # phrases, so a sign the signer made vanished from the output.
+        self.assertIn("later", render("GOODBYE LATER"))
+
+    def test_every_object_is_rendered(self):
+        # "YOU MOTHER FATHER" rendered "Your mother." -- silently dropping a
+        # sign is the worst failure this module has, worse than awkwardness.
+        out = render("YOU MOTHER FATHER")
+        self.assertIn("mother", out)
+        self.assertIn("father", out)
+
+    def test_a_bare_subject_reads_as_english(self):
+        self.assertEqual(render("HELLO ME"), "Hello, me.")
+
+    def test_pronouns_with_no_predicate(self):
+        self.assertEqual(render("ME YOU"), "Me, you.")
+        self.assertEqual(render("TOMORROW ME YOU"), "Tomorrow, me, you.")
