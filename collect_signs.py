@@ -251,17 +251,7 @@ def main():
     start = time.monotonic()
 
     clips_file = open(signset.CLIPS_PATH, "a")
-    csv_is_new = not os.path.exists(signset.SIGNS_PATH) or \
-        os.path.getsize(signset.SIGNS_PATH) == 0
-    csv_file = open(signset.SIGNS_PATH, "a", newline="")
-    if not csv_is_new:
-        existing = signset.read_header(signset.SIGNS_PATH)
-        if existing != signset.HEADER:
-            sys.exit(f"{signset.SIGNS_PATH} has a different schema; not appending. "
-                     f"Re-derive it with `python rebuild_signs.py`.")
-    else:
-        csv_file.write(",".join(signset.HEADER) + "\n")
-    csv_file.flush()
+    csv_file = open_rows_file()
 
     print(f"\nReady -- {person}, {dominant_hand.lower()}-dominant.")
     print(f"Convention: {config.describe({'mirrored_input': mirrored})}")
@@ -362,6 +352,53 @@ def main():
         cv2.destroyAllWindows()
 
     report(state, person)
+
+
+def open_rows_file():
+    """Open veronica_signs.csv for appending, reconciling any schema drift.
+
+    The CSV is a **build artifact** -- every row in it is derivable from
+    veronica_clips.jsonl -- so a stale schema must never be a dead end. An
+    earlier version refused to append and told the user to run
+    rebuild_signs.py, which does nothing when no clips exist yet. That is
+    exactly the state a previous session leaves behind, because the file used
+    to be created with its header the moment the collector started, whether or
+    not anything was recorded. Both halves of that are fixed here: the header
+    is written on the first saved clip, and a mismatch is reconciled rather
+    than refused.
+
+    The one case that genuinely stops: rows present with no archive to rebuild
+    them from. That is the only situation where the CSV is not reproducible,
+    so it is the only one worth a human decision.
+    """
+    path = signset.SIGNS_PATH
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        header = signset.read_header(path)
+        if header != signset.HEADER:
+            with open(path, newline="") as fh:
+                rows = max(0, sum(1 for _ in fh) - 1)
+            clips = (list(signset.read_clips(signset.CLIPS_PATH))
+                     if os.path.exists(signset.CLIPS_PATH) else [])
+
+            if clips:
+                print(f"{path} predates the current schema -- re-deriving "
+                      f"{len(clips)} clip(s) from {signset.CLIPS_PATH}.")
+                signset.write_rows(path, [signset.clip_to_row(c) for c in clips])
+            elif rows == 0:
+                print(f"{path} held only a stale header; replacing it.")
+                os.remove(path)
+            else:
+                sys.exit(
+                    f"{path} has {rows} row(s) under an older schema and there "
+                    f"is no\n{signset.CLIPS_PATH} to re-derive them from. That "
+                    f"CSV cannot be rebuilt,\nso move it aside yourself before "
+                    f"continuing:\n    mv {path} {path}.old")
+
+    csv_file = open(path, "a", newline="")
+    if os.path.getsize(path) == 0:
+        csv_file.write(",".join(signset.HEADER) + "\n")
+        csv_file.flush()
+    return csv_file
 
 
 def save_clip(clip, clips_file, csv_file, undo_stack):
