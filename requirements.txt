@@ -10,6 +10,12 @@ setuptools>=65           # provides pkg_resources, used to locate symspellpy's d
 # Training only (train_classifier.py)
 pandas>=2.0
 
+# NOT a pip package: Project Veronica also needs MediaPipe's face detector
+# model, which anchors sign location (without it FATHER and MOTHER become the
+# same sign). Download it into the repository root:
+#   curl -LO https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite
+# `python check_setup.py` reports whether it is there.
+
 # NOTE: TensorFlow/Keras are deliberately absent. The pipeline moved from a
 # Keras CNN over pixel crops to a scikit-learn MLP over MediaPipe landmarks;
 # nothing in the codebase imports TF any more.

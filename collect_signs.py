@@ -1,0 +1,533 @@
+"""
+Clip collection for Project Veronica — two hands, movement, real ASL signs.
+
+The letter collector (`collect_data.py`) records one row per *frame* of a held
+pose, because a fingerspelled letter is a held pose. A sign is a path, so this
+records one clip per *sign attempt*: press SPACE, sign, press SPACE again.
+
+It writes two files (see signset.py for why):
+
+    veronica_clips.jsonl   raw landmarks — the archive, never regenerable
+    veronica_signs.csv     371-float training rows — derived, regenerable with
+                           `python rebuild_signs.py`
+
+Both are appended to, never overwritten, so data from several people
+accumulates exactly as `landmark_data.csv` does today.
+
+What to vary, and what not to
+-----------------------------
+The letter collector's guidance was counter-intuitive because the hand frame
+erased most of what looked like variation. Here it is different, and more
+ordinary: the feature vector now carries orientation, location relative to the
+face, and the whole trajectory, so **most real variation now reaches the
+features**. Sign at a natural speed and amplitude, and let the natural
+differences between takes stand.
+
+The one piece of the old advice that still holds: **position in the frame and
+distance from the camera are still normalized away**, now against the face
+rather than the hand. Shuffling around in your chair contributes nothing.
+
+Still true, and now the binding constraint again: **collect from more people,
+not more clips per person.** Measured on the letter dataset, a fourth signer
+was worth +4.7 points on an unseen signer while tripling the rows from existing
+signers was worth nothing.
+
+Controls:
+  [ / ]   = previous / next sign          , / . = jump a category
+  SPACE   = start / stop recording a clip
+  C       = countdown, then record hands-free (for two-handed signs)
+  U       = undo the last clip
+  F       = toggle the feature/diagnostic readout
+  Q       = quit
+"""
+import argparse
+import json
+import os
+import sys
+import time
+
+import cv2
+
+import capture
+import config
+import hands
+import location
+import sequence
+import signset
+
+HAND_MODEL = capture.HAND_MODEL
+FACE_MODEL = capture.FACE_MODEL
+
+# Clips per sign per person. The letter dataset plateaued at roughly 4,000
+# training rows total while each new *person* kept paying, so the budget is
+# better spent on the next signer than on a longer session with this one.
+# Clips are far more independent than frames were -- each is a separate
+# attempt -- so this number is much smaller than the old 100 rows/label.
+SUGGESTED_CLIPS = 20
+
+# Hands-free recording (C). Two-handed signs need both hands up, which leaves
+# nobody to press a key -- so arm it, get into position, and it starts and
+# stops on its own.
+COUNTDOWN_MS = 3000
+AUTO_CLIP_MS = 2000
+
+FACE_HELP = f"""
+{FACE_MODEL} not found.
+
+Stage 2 needs a face to anchor sign location against: FATHER and MOTHER are
+the same handshape, orientation and movement, differing only in forehead
+versus chin. Without it every location feature is the zeroed no-face block,
+and signs that differ only in where they are made become the same class.
+
+Download MediaPipe's short-range face detector into this directory:
+
+    {capture.FACE_MODEL_URL}
+
+Collecting a whole session without it by accident would be expensive, which
+is why this stops rather than warns. If you really mean to, pass --no-face.
+"""
+
+
+def ask_person():
+    while True:
+        name = input("Who is signing? (first name, e.g. omar): ").strip().lower()
+        if name and all(c.isalnum() or c in "-_" for c in name):
+            return name
+        print("  Please enter a single name (letters/digits, no spaces).")
+
+
+def ask_dominant():
+    """Which hand leads.
+
+    Not cosmetic: a left-dominant signer's scene is mirrored into
+    right-dominant space, because ASL is handedness-symmetric and without the
+    mirror every sign they make is an unseen class. Getting this wrong is
+    undetectable downstream -- the features stay perfectly plausible -- so it
+    is asked rather than guessed.
+    """
+    while True:
+        answer = input("Dominant (signing) hand? [R/l]: ").strip().lower() or "r"
+        if answer in ("r", "right"):
+            return hands.RIGHT
+        if answer in ("l", "left"):
+            return hands.LEFT
+        print("  Please answer R or L.")
+
+
+def draw(frame, detected, face_box, state):
+    height, width = frame.shape[:2]
+    h, w = height, width
+    for points, label in detected:
+        colour = (0, 255, 255) if label == hands.RIGHT else (255, 200, 0)
+        for x, y in points:
+            cv2.circle(frame, (int(x * w), int(y * h)), 2, colour, -1)
+
+    if face_box is not None:
+        fx, fy, fw, fh = face_box
+        cv2.rectangle(frame, (int(fx * w), int(fy * h)),
+                      (int((fx + fw) * w), int((fy + fh) * h)), (120, 220, 120), 1)
+    else:
+        cv2.putText(frame, "NO FACE - location features will be empty",
+                    (10, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+    recording = state["recording"]
+    colour = (0, 255, 0) if recording else (0, 0, 255)
+    saved = state["counts"].get(state["label"], 0)
+    enough = "  ENOUGH" if saved >= SUGGESTED_CLIPS else ""
+
+    cv2.putText(frame, f"{state['label']}  ({saved}/{SUGGESTED_CLIPS}{enough})",
+                (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                (0, 255, 255) if enough else colour, 2)
+    cv2.putText(frame, f"{state['category']}   {state['index'] + 1}/{state['total']}",
+                (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1)
+    cv2.putText(frame, "RECORDING" if recording else "paused",
+                (10, 105), cv2.FONT_HERSHEY_SIMPLEX, 0.8, colour, 2)
+    cv2.putText(frame, f"signer: {state['person']} ({state['dominant'].lower()}-dominant)"
+                       f"   hands: {len(detected)}   clips: {state['total_clips']}",
+                (10, 135), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+
+    if recording:
+        cv2.putText(frame, f"{state['frames']} frames / {state['span_ms']}ms",
+                    (10, 170), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+
+    remaining = state.get("countdown_until")
+    if remaining is not None:
+        seconds = max(0, int((remaining - state["now_ms"]) / 1000) + 1)
+        cv2.putText(frame, str(seconds), (int(width / 2) - 40, int(height / 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 4.0, (0, 220, 220), 6)
+
+    if state["message"]:
+        cv2.putText(frame, state["message"], (10, h - 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, state["message_colour"], 2)
+
+    cv2.putText(frame, "[ ] sign  , . category  SPACE rec  C countdown  U undo  F info  Q quit",
+                (10, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
+
+
+def draw_readout(frame, detected, face_box, dominant_hand, frame_w, frame_h,
+                 mirrored_input=True):
+    """Live feature values, so the layers can be checked against a real hand.
+
+    Same reasoning as MotionDetector.debug_info(): the mirror convention and
+    the location bands are the parts of this pipeline that can only be
+    confirmed in front of a camera, and an assumption nobody can see is an
+    assumption nobody checks. In particular the reported handedness here is
+    the thing to verify before a real session -- raise your right hand and
+    confirm it says so.
+    """
+    dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
+                                   signer_dominant=dominant_hand,
+                                   mirrored_input=mirrored_input)
+
+    # Both the raw label and what it resolves to, because the raw label alone
+    # is what made this ambiguous: a colour on screen says nothing about
+    # whether the convention is right.
+    raw = [label for _, label in detected] or ["-"]
+    lines = [f"raw handedness: {raw}   "
+             f"(mirrored_input={mirrored_input})",
+             f"dominant hand tracked: {'yes' if dom is not None else 'no'}",
+             f"non-dominant tracked:  {'yes' if non is not None else 'no'}"]
+    for key, value in location.debug_info(hands.anchor(dom), hands.anchor(non),
+                                          face).items():
+        lines.append(f"{key}: {value}")
+
+    y = 210
+    for line in lines:
+        cv2.putText(frame, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                    (255, 200, 0), 1)
+        y += 18
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-face", action="store_true",
+                        help="collect without location features (rarely what you want)")
+    parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--face-every", type=int, default=3,
+                        help="run the face detector every Nth frame (1 = every "
+                             "frame)")
+    parser.add_argument("--mirrored-input", choices=["true", "false"],
+                        help="override the stored handedness convention")
+    args = parser.parse_args()
+
+    # The convention decides which physical hand becomes the dominant block.
+    # It is read from the config rather than assumed, because check_setup.py
+    # is the only thing that can establish it -- against a real hand, on this
+    # camera. See config.py.
+    mirrored = config.mirrored_input()
+    if args.mirrored_input:
+        mirrored = args.mirrored_input == "true"
+
+    if not os.path.exists(HAND_MODEL):
+        sys.exit(f"{HAND_MODEL} not found.")
+    use_face = not args.no_face
+    if use_face and not os.path.exists(FACE_MODEL):
+        sys.exit(FACE_HELP)
+
+    person = ask_person()
+    dominant_hand = ask_dominant()
+
+    landmarker = capture.build_landmarker(num_hands=2)
+    face_detector = capture.build_face_detector() if use_face else None
+    faces = capture.PeriodicFace(face_detector, every=args.face_every)
+
+    cap = cv2.VideoCapture(args.camera)
+    if not cap.isOpened():
+        sys.exit(f"Could not open camera {args.camera}.")
+
+    labels = signset.SIGNS
+    category_starts = []
+    seen = 0
+    for name, group in signset.VOCABULARY.items():
+        category_starts.append((seen, name))
+        seen += len(group)
+
+    def category_of(index):
+        current = category_starts[0][1]
+        for start, name in category_starts:
+            if index >= start:
+                current = name
+        return current
+
+    state = {
+        "label": labels[0], "index": 0, "total": len(labels),
+        "category": category_of(0), "person": person, "dominant": dominant_hand,
+        "recording": False, "counts": {}, "total_clips": 0,
+        "countdown_until": None, "stop_at": None,
+        "frames": 0, "span_ms": 0, "message": "", "message_colour": (200, 200, 200),
+    }
+
+    def say(text, colour=(200, 200, 200)):
+        state["message"] = text
+        state["message_colour"] = colour
+        print(text)
+
+    def finish_clip():
+        """Stop recording and save. Shared by SPACE and the countdown."""
+        state["recording"] = False
+        state["stop_at"] = None
+        clip = signset.raw_clip(
+            f"{person}-{session}-{state['total_clips'] + 1}",
+            state["label"], person, dominant_hand,
+            frame_w, frame_h, clip_frames, mirrored_input=mirrored)
+        saved, note, colour = save_clip(clip, clips_file, csv_file, undo_stack)
+        if saved:
+            state["counts"][state["label"]] = \
+                state["counts"].get(state["label"], 0) + 1
+            state["total_clips"] += 1
+        return note, colour
+
+    session = int(time.time())
+    clip_frames = []
+    clip_start_ms = 0
+    undo_stack = []          # (clips_offset, csv_offset, label) for U
+    show_readout = False
+    start = time.monotonic()
+
+    clips_file = open(signset.CLIPS_PATH, "a")
+    csv_file = open_rows_file()
+
+    print(f"\nReady -- {person}, {dominant_hand.lower()}-dominant.")
+    print(f"Convention: {config.describe({'mirrored_input': mirrored})}")
+    print(f"{len(labels)} signs. Aim for ~{SUGGESTED_CLIPS} clips each, then "
+          f"recruit the next person.")
+    print("Press F and check the reported handedness matches your real hand "
+          "before you start.\n")
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frame = cv2.flip(frame, 1)     # selfie view; see detected_hands()
+            frame_h, frame_w = frame.shape[:2]
+            timestamp_ms = int((time.monotonic() - start) * 1000)
+
+            image = capture.to_mp_image(frame)
+            hand_result = landmarker.detect_for_video(image, timestamp_ms)
+            detected = capture.detected_hands(hand_result)
+
+            face_box = faces.update(image, timestamp_ms, frame_w, frame_h)
+
+            event = due(state, timestamp_ms)
+            if event == "start":
+                state["countdown_until"] = None
+                clip_frames = []
+                clip_start_ms = timestamp_ms
+                state["recording"] = True
+                state["stop_at"] = timestamp_ms + AUTO_CLIP_MS
+                state["frames"] = state["span_ms"] = 0
+                say(f"recording {state['label']}...", (0, 220, 0))
+            elif event == "stop":
+                say(*finish_clip())
+
+            if state["recording"]:
+                clip_frames.append(signset.raw_frame(
+                    detected, face_box, timestamp_ms - clip_start_ms))
+                state["frames"] = len(clip_frames)
+                state["span_ms"] = clip_frames[-1]["t"]
+
+            state["now_ms"] = timestamp_ms
+            draw(frame, detected, face_box, state)
+            if show_readout:
+                draw_readout(frame, detected, face_box, dominant_hand,
+                             frame_w, frame_h, mirrored)
+            cv2.imshow("Veronica -- sign collection", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+
+            elif key == ord('c') and not state["recording"]:
+                state["countdown_until"] = timestamp_ms + COUNTDOWN_MS
+                say(f"get into position for {state['label']}...", (0, 220, 220))
+
+            elif key == ord(' '):
+                state["countdown_until"] = None
+                if not state["recording"]:
+                    clip_frames = []
+                    clip_start_ms = timestamp_ms
+                    state["recording"] = True
+                    state["frames"] = state["span_ms"] = 0
+                    say(f"recording {state['label']}...", (0, 220, 0))
+                else:
+                    say(*finish_clip())
+
+            elif key == ord('u'):
+                say(*undo_last(undo_stack, clips_file, csv_file, state))
+
+            elif key in (ord('['), ord(']')) and not state["recording"]:
+                step = -1 if key == ord('[') else 1
+                state["index"] = (state["index"] + step) % len(labels)
+                state["label"] = labels[state["index"]]
+                state["category"] = category_of(state["index"])
+                state["message"] = ""
+
+            elif key in (ord(','), ord('.')) and not state["recording"]:
+                starts = [s for s, _ in category_starts]
+                if key == ord('.'):
+                    nxt = next((s for s in starts if s > state["index"]), starts[0])
+                else:
+                    earlier = [s for s in starts if s < state["index"]]
+                    nxt = earlier[-1] if earlier else starts[-1]
+                state["index"] = nxt
+                state["label"] = labels[nxt]
+                state["category"] = category_of(nxt)
+                state["message"] = ""
+
+            elif key == ord('f'):
+                show_readout = not show_readout
+
+    finally:
+        clips_file.close()
+        csv_file.close()
+        landmarker.close()
+        if face_detector is not None:
+            face_detector.close()
+        cap.release()
+        cv2.destroyAllWindows()
+
+    report(state, person)
+
+
+def due(state, now_ms):
+    """What the countdown timer wants to happen now: 'start', 'stop' or None.
+
+    Split out from the camera loop purely so it can be tested without a
+    camera -- timing bugs here only show up on hardware, which is the worst
+    place to find them.
+    """
+    if state["countdown_until"] is not None and now_ms >= state["countdown_until"]:
+        return "start"
+    if state["recording"] and state["stop_at"] is not None \
+            and now_ms >= state["stop_at"]:
+        return "stop"
+    return None
+
+
+def open_rows_file():
+    """Open veronica_signs.csv for appending, reconciling any schema drift.
+
+    The CSV is a **build artifact** -- every row in it is derivable from
+    veronica_clips.jsonl -- so a stale schema must never be a dead end. An
+    earlier version refused to append and told the user to run
+    rebuild_signs.py, which does nothing when no clips exist yet. That is
+    exactly the state a previous session leaves behind, because the file used
+    to be created with its header the moment the collector started, whether or
+    not anything was recorded. Both halves of that are fixed here: the header
+    is written on the first saved clip, and a mismatch is reconciled rather
+    than refused.
+
+    The one case that genuinely stops: rows present with no archive to rebuild
+    them from. That is the only situation where the CSV is not reproducible,
+    so it is the only one worth a human decision.
+    """
+    path = signset.SIGNS_PATH
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        header = signset.read_header(path)
+        if header != signset.HEADER:
+            with open(path, newline="") as fh:
+                rows = max(0, sum(1 for _ in fh) - 1)
+            clips = (list(signset.read_clips(signset.CLIPS_PATH))
+                     if os.path.exists(signset.CLIPS_PATH) else [])
+
+            if clips:
+                print(f"{path} predates the current schema -- re-deriving "
+                      f"{len(clips)} clip(s) from {signset.CLIPS_PATH}.")
+                signset.write_rows(path, [signset.clip_to_row(c) for c in clips])
+            elif rows == 0:
+                print(f"{path} held only a stale header; replacing it.")
+                os.remove(path)
+            else:
+                sys.exit(
+                    f"{path} has {rows} row(s) under an older schema and there "
+                    f"is no\n{signset.CLIPS_PATH} to re-derive them from. That "
+                    f"CSV cannot be rebuilt,\nso move it aside yourself before "
+                    f"continuing:\n    mv {path} {path}.old")
+
+    csv_file = open(path, "a", newline="")
+    if os.path.getsize(path) == 0:
+        csv_file.write(",".join(signset.HEADER) + "\n")
+        csv_file.flush()
+    return csv_file
+
+
+def save_clip(clip, clips_file, csv_file, undo_stack):
+    """Append one clip to both files, rejecting takes that cannot be a sign.
+
+    The floors are SignBuffer's, so a clip that is accepted here is one the
+    live pipeline could also have classified -- a clip too short or too sparse
+    to be a sign at collection time would be an unlearnable training row.
+    Rejecting it now costs a retake; keeping it costs accuracy that is hard to
+    trace back.
+    """
+    samples = signset.clip_to_samples(clip)
+    buffer = sequence.SignBuffer()
+    for sample in samples:
+        buffer.add(sample.t, sample.features, sample.dom, sample.non)
+    if not buffer.ready():
+        return False, (f"too short -- {len(samples)} frames / "
+                       f"{signset.clip_span_ms(clip)}ms, not saved"), (0, 0, 255)
+
+    coverage = signset.face_coverage(clip)
+    tracked = signset.hand_coverage(clip)
+    row = signset.clip_to_row(clip)
+
+    # Offsets before writing, so U can truncate both files back exactly.
+    undo_stack.append((clips_file.tell(), csv_file.tell(), clip["label"]))
+
+    # Written here rather than via signset.append_clip() because undo needs
+    # this handle's offsets -- a separately opened handle has none to record.
+    clips_file.write(json.dumps(clip, separators=(",", ":")) + "\n")
+    clips_file.flush()
+    csv_file.write(",".join(str(v) for v in row) + "\n")
+    csv_file.flush()
+
+    if tracked < signset.MIN_HAND_COVERAGE:
+        return True, (f"saved, but hands tracked in only {tracked:.0%} of "
+                      f"frames -- retake"), (0, 165, 255)
+    if coverage < signset.MIN_FACE_COVERAGE:
+        return True, (f"saved, but face seen in only {coverage:.0%} of frames "
+                      f"-- consider a retake"), (0, 165, 255)
+    return True, (f"saved {clip['label']}  ({len(samples)} frames, "
+                  f"{tracked:.0%} tracked)"), (0, 220, 0)
+
+
+def undo_last(undo_stack, clips_file, csv_file, state):
+    """Drop the most recent clip from both files.
+
+    Worth the bookkeeping: a fluffed take is common, and the alternative is
+    either keeping known-bad data or editing two files by hand afterwards.
+    Truncating to a recorded offset is exact, where deleting a last line by
+    rewriting is not.
+    """
+    if not undo_stack:
+        return "nothing to undo", (0, 165, 255)
+    clips_offset, csv_offset, label = undo_stack.pop()
+    for handle, offset in ((clips_file, clips_offset), (csv_file, csv_offset)):
+        handle.flush()
+        handle.truncate(offset)
+        handle.seek(offset)
+    state["counts"][label] = max(0, state["counts"].get(label, 0) - 1)
+    state["total_clips"] = max(0, state["total_clips"] - 1)
+    return f"undid {label}", (0, 165, 255)
+
+
+def report(state, person):
+    counts = {k: v for k, v in state["counts"].items() if v}
+    print(f"\nSaved {state['total_clips']} clips as '{person}'")
+    print(f"  archive: {signset.CLIPS_PATH}")
+    print(f"  rows:    {signset.SIGNS_PATH}")
+    if counts:
+        print("\nPer-sign clips this session:")
+        for label in sorted(counts):
+            print(f"  {label:20} {counts[label]}")
+    thin = [s for s in signset.SIGNS if counts.get(s, 0) < SUGGESTED_CLIPS]
+    if thin:
+        print(f"\nBelow {SUGGESTED_CLIPS} clips this session ({len(thin)}): "
+              f"{', '.join(thin[:12])}{' ...' if len(thin) > 12 else ''}")
+    print("\nRetrain from the archive with: python rebuild_signs.py")
+
+
+if __name__ == "__main__":
+    main()

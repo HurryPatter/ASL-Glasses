@@ -213,6 +213,29 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `test_dataset.py` | Offline schema/grouping tests |
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
+| `VERONICA.md` / `VERONICA_DESIGN.md` | Veronica roadmap / design notes |
+| `hands.py` | Two-hand + orientation feature layer (Veronica stage 1, stdlib only) |
+| `location.py` | Face-anchored sign location (Veronica stage 2, stdlib only) |
+| `sequence.py` | Clip → fixed-length sign vector (Veronica stage 3, stdlib only) |
+| `signset.py` | Sign dataset schema, vocabulary, archive→row (Veronica stage 4, stdlib only) |
+| `collect_signs.py` | Two-handed sign clip collection (Veronica stage 4) |
+| `rebuild_signs.py` | Regenerate the training CSV from the raw clip archive |
+| `inspect_signs.py` | What is in the clips; what separates two signs (stdlib only) |
+| `folds.py` | Leave-one-person-out fold construction (Veronica stage 5, stdlib only) |
+| `train_signs.py` | Sign classifier training + cross-person report (Veronica stage 5) |
+| `gloss.py` | ASL gloss → English (Veronica stage 7, stdlib only) |
+| `segment.py` | Continuous sign segmentation (Veronica stage 6, stdlib only) |
+| `capture.py` | The single MediaPipe adapter seam (Veronica) |
+| `config.py` | Persisted capture conventions (Veronica, stdlib only) |
+| `demo_veronica.py` | Live Veronica pipeline — runs without a trained model |
+| `check_setup.py` | Preflight: deps, models, camera fps, handedness convention |
+| `test_hands.py` | Offline feature-layer tests (no camera needed) |
+| `test_location.py` | Offline location-layer tests (no camera needed) |
+| `test_sequence.py` | Offline movement-layer tests (no camera needed) |
+| `test_signset.py` | Offline sign-schema / reconstruction tests (no camera needed) |
+| `test_folds.py` | Offline fold-construction tests (no camera needed) |
+| `test_gloss.py` | Offline gloss→English tests (no camera needed) |
+| `test_segment.py` | Offline continuous-segmentation tests (no camera needed) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |
@@ -225,3 +248,12 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 - **`trial`** — a rule-based, non-ML geometric classifier (`rules.py` +
   `motion.py`). Kept as a **fallback / last resort only**. It proved the
   landmark-geometry concept before `main` adopted an ML version of the same idea.
+- **`project-veronica`** — the extension from fingerspelling to actual ASL:
+  two hands, orientation, location, movement and phrases. See `VERONICA.md`
+  for the roadmap and `VERONICA_DESIGN.md` for how it works. It adds files rather than rewriting the pipeline, so
+  the thesis basis here keeps running throughout.
+
+> Note that `main` is currently **behind** the pipeline work — the debouncer
+> fix, the J/Z travel gate and the cross-person accuracy methodology were
+> merged onto the feature branch, not onto `main`. Veronica is cut from that
+> tip, not from `main`.
