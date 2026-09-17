@@ -401,3 +401,81 @@ class TestHandednessSymmetry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestActingHandTracker(unittest.TestCase):
+    """The deployed system meets a stranger and cannot ask which hand leads,
+    so it has to watch which one does the work."""
+
+    def feed(self, tracker, frames, fps=30.0):
+        step = 1000.0 / fps
+        for i, detected in enumerate(frames):
+            tracker.update(i * step, detected)
+
+    def moving(self, label, steps=20, distance=8.0, start=400):
+        return [[(place(start + distance * i, 300), label)] for i in range(steps)]
+
+    def still(self, label, steps=20, x=200):
+        return [[(place(x, 300), label)] for _ in range(steps)]
+
+    def test_a_lone_hand_is_the_acting_hand(self):
+        tracker = hands.ActingHandTracker()
+        self.feed(tracker, self.moving(hands.RIGHT))
+        self.assertEqual(tracker.acting_label(), hands.RIGHT)
+
+    def test_the_busier_of_two_hands_wins(self):
+        # An asymmetric two-handed sign: one hand acts, the other is a base.
+        tracker = hands.ActingHandTracker()
+        moving = self.moving(hands.LEFT)
+        still = self.still(hands.RIGHT)
+        self.feed(tracker, [m + s for m, s in zip(moving, still)])
+        self.assertEqual(tracker.acting_label(), hands.LEFT)
+
+    def test_a_still_hand_alone_is_still_the_acting_hand(self):
+        # Nothing has moved, but there is only one candidate.
+        tracker = hands.ActingHandTracker()
+        self.feed(tracker, self.still(hands.LEFT))
+        self.assertEqual(tracker.acting_label(), hands.LEFT)
+
+    def test_nothing_seen_yet(self):
+        self.assertIsNone(hands.ActingHandTracker().acting_label())
+
+    def test_the_convention_turns_a_label_into_a_hand(self):
+        # "Which hand MediaPipe saw" is not yet "which of the signer's hands".
+        as_reported = hands.ActingHandTracker(mirrored_input=True)
+        swapped = hands.ActingHandTracker(mirrored_input=False)
+        for tracker in (as_reported, swapped):
+            self.feed(tracker, self.moving(hands.LEFT))
+        self.assertEqual(as_reported.signer_dominant(), hands.LEFT)
+        self.assertEqual(swapped.signer_dominant(), hands.RIGHT)
+
+    def test_a_signer_switching_hands_is_followed(self):
+        # Travel decays, so an earlier hand cannot outvote the current one
+        # forever -- which is what you want mid-conversation.
+        tracker = hands.ActingHandTracker(half_life_ms=400.0)
+        self.feed(tracker, self.moving(hands.RIGHT, steps=30))
+        self.assertEqual(tracker.acting_label(), hands.RIGHT)
+        self.feed(tracker, self.moving(hands.LEFT, steps=30))
+        self.assertEqual(tracker.acting_label(), hands.LEFT)
+
+    def test_decay_is_wall_clock_so_frame_rate_does_not_change_it(self):
+        fast, slow = (hands.ActingHandTracker(half_life_ms=500.0) for _ in range(2))
+        self.feed(fast, self.moving(hands.RIGHT, steps=60), fps=60.0)
+        self.feed(slow, self.moving(hands.RIGHT, steps=15), fps=15.0)
+        self.assertEqual(fast.acting_label(), slow.acting_label())
+
+    def test_a_hand_leaving_frame_does_not_register_a_jump(self):
+        # Re-entering elsewhere must not count the gap as travel, or a hand
+        # that flickers becomes the busiest one without moving.
+        tracker = hands.ActingHandTracker()
+        frames = self.still(hands.RIGHT, steps=5, x=200)
+        frames += [[] for _ in range(5)]
+        frames += self.still(hands.RIGHT, steps=5, x=600)
+        self.feed(tracker, frames)
+        self.assertEqual(tracker.acting_label(), hands.RIGHT)
+
+    def test_reset_clears_it(self):
+        tracker = hands.ActingHandTracker()
+        self.feed(tracker, self.moving(hands.RIGHT))
+        tracker.reset()
+        self.assertIsNone(tracker.acting_label())

@@ -87,9 +87,9 @@ SIGNS = [sign for group in VOCABULARY.values() for sign in group]
 # Metadata, not features. `clip_id` is what lets a suspicious training row be
 # traced back to the exact clip in the archive -- without it, a class that
 # trains badly is a mystery rather than a recording to go and look at.
-META_COLUMNS = ["clip_id", "label", "person", "dominant", "mirrored_input",
-                "n_frames", "clip_ms", "face_coverage", "hand_coverage",
-                "handedness_stability"]
+META_COLUMNS = ["clip_id", "label", "person", "dominant", "acting_hand",
+                "mirrored_input", "n_frames", "clip_ms", "face_coverage",
+                "hand_coverage", "handedness_stability"]
 HEADER = META_COLUMNS + sequence.SIGN_COLUMNS
 
 # Below this, the clip has no usable location data for most of its span, so
@@ -343,8 +343,59 @@ def hand_coverage(clip):
     return sum(1 for f in frames if f.get("hands")) / len(frames)
 
 
+# ── which hand is doing the work ───────────────────────────────────────────
+def acting_hand(clip, mirrored_input=None):
+    """The physical hand performing the sign: hands.RIGHT or hands.LEFT.
+
+    This is **observed, not asked**, and that is the point. collect_signs.py
+    asks the signer which hand leads, but the glasses meet a stranger and
+    cannot ask anyone anything. A canonical space keyed on a fact only
+    available at collection time is a space the deployed system cannot enter.
+
+    Whichever hand is doing the work is the acting hand. With one hand tracked
+    that is simply the one; with two, it is the one that travels further, which
+    is what distinguishes the acting hand from the base hand in an asymmetric
+    two-handed sign. Both are readable from the video alone.
+
+    Handedness is not phonemic in ASL -- a left-handed signer's sign is the
+    mirror image and means the same thing -- so canonicalising on the acting
+    hand loses no distinction. It gains the one that matters: a sign made with
+    either hand lands in the same place.
+    """
+    if mirrored_input is None:
+        mirrored_input = clip.get("mirrored_input", True)
+
+    frames = clip.get("frames") or []
+    tracks, assignment = _track_hands(frames)
+    if not tracks:
+        return clip.get("dominant", hands.RIGHT)
+
+    # Busiest track by total wrist travel. Scale does not matter here, only
+    # which of the two moved more, so raw normalized units are enough.
+    travel = [0.0] * len(tracks)
+    previous = {}
+    for frame, taken in zip(frames, assignment):
+        for hand_index, track_index in taken.items():
+            x, y = _wrist(frame["hands"][hand_index])
+            if track_index in previous:
+                px, py = previous[track_index]
+                travel[track_index] += math.hypot(x - px, y - py)
+            previous[track_index] = (x, y)
+
+    busiest = travel.index(max(travel)) if any(travel) else 0
+    label = _majority(tracks[busiest]["labels"])
+    if label not in (hands.LEFT, hands.RIGHT):
+        return clip.get("dominant", hands.RIGHT)
+
+    # The label says which hand MediaPipe saw; the convention says whether to
+    # believe it as reported.
+    if mirrored_input:
+        return label
+    return hands.LEFT if label == hands.RIGHT else hands.RIGHT
+
+
 # ── reconstruction: archive -> training row ────────────────────────────────
-def clip_to_samples(clip, mirrored_input=None):
+def clip_to_samples(clip, mirrored_input=None, signer_dominant=None):
     """Rebuild the per-frame Sample stream from an archived clip.
 
     The one function that has to stay correct forever: every training row the
@@ -356,10 +407,14 @@ def clip_to_samples(clip, mirrored_input=None):
     signing again.
     """
     frame_w, frame_h = clip["frame_w"], clip["frame_h"]
-    dominant_hand = clip.get("dominant", hands.RIGHT)
     if mirrored_input is None:
         # Clips predating the field were collected under the old default.
         mirrored_input = clip.get("mirrored_input", True)
+
+    # Observed rather than taken from clip["dominant"], so a clip signed with
+    # either hand lands in the same canonical space -- and so the live pipeline
+    # can do the same thing for a signer it has never met.
+    dominant_hand = signer_dominant or acting_hand(clip, mirrored_input)
 
     frames, _ = stabilized_frames(clip)
     frames = smooth_points(frames)
@@ -414,6 +469,7 @@ def clip_to_row(clip, mirrored_input=None):
         clip["label"],
         clip["person"],
         clip.get("dominant", hands.RIGHT),
+        acting_hand(clip, used),
         bool(used),
         len(clip.get("frames") or []),
         clip_span_ms(clip),

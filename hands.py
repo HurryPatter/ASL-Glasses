@@ -344,6 +344,81 @@ def canonical_scene(detected, face=None, signer_dominant=RIGHT,
     return dominant, nondominant, face
 
 
+class ActingHandTracker:
+    """Which hand is doing the work, decided live from movement alone.
+
+    The offline counterpart of signset.acting_hand(), and the reason both
+    exist: `collect_signs.py` can ask a signer which hand leads, but the
+    glasses meet a stranger and cannot ask anyone anything. A canonical space
+    keyed on a fact only available at collection time is a space the deployed
+    system cannot enter.
+
+    Whichever hand travels further is the acting hand. That is the same rule
+    offline, and it separates the acting hand from the base hand in an
+    asymmetric two-handed sign as well as picking the obvious answer when only
+    one hand is up.
+
+    Travel decays rather than accumulating forever, so a signer who switches
+    hands mid-conversation is followed rather than outvoted by their own
+    history. The decay is in wall-clock milliseconds, like every other window
+    in this project, so it means the same thing at any frame rate.
+    """
+
+    def __init__(self, half_life_ms=2000.0, mirrored_input=True):
+        self.half_life_ms = half_life_ms
+        self.mirrored_input = mirrored_input
+        self._travel = {LEFT: 0.0, RIGHT: 0.0}
+        self._last = {}
+        self._last_t = None
+
+    def update(self, timestamp_ms, detected):
+        """Feed one frame of [(points, handedness label)]."""
+        if self._last_t is not None:
+            elapsed = max(0.0, timestamp_ms - self._last_t)
+            decay = 0.5 ** (elapsed / self.half_life_ms) if self.half_life_ms else 1.0
+            for key in self._travel:
+                self._travel[key] *= decay
+        self._last_t = timestamp_ms
+
+        seen = set()
+        for points, label in detected:
+            if label not in self._travel:
+                continue
+            seen.add(label)
+            wrist = points[WRIST]
+            if label in self._last:
+                previous = self._last[label]
+                self._travel[label] += math.hypot(wrist[0] - previous[0],
+                                                  wrist[1] - previous[1])
+            self._last[label] = wrist
+        for label in set(self._last) - seen:
+            del self._last[label]          # gone from frame; don't bridge a jump
+
+    def acting_label(self):
+        """The raw MediaPipe label of the busier hand, or None."""
+        if not any(self._travel.values()):
+            return next(iter(self._last), None)
+        return max(self._travel, key=self._travel.get)
+
+    def signer_dominant(self, default=RIGHT):
+        """The value to pass as canonical_scene(signer_dominant=...).
+
+        Resolving the label through the mirror convention is what turns "which
+        hand MediaPipe saw" into "which of the signer's hands that is".
+        """
+        label = self.acting_label()
+        if label not in (LEFT, RIGHT):
+            return default
+        if self.mirrored_input:
+            return label
+        return LEFT if label == RIGHT else RIGHT
+
+    def reset(self):
+        self._travel = {LEFT: 0.0, RIGHT: 0.0}
+        self._last = {}
+        self._last_t = None
+
+
 # ── schema ─────────────────────────────────────────────────────────────────
 def _hand_columns(prefix):
     columns = [f"{prefix}_present"]

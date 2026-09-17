@@ -98,10 +98,11 @@ def draw_landmarks(frame, detected, face_box):
 
 
 def draw_readout(frame, segmenter, dom, non, face, detected, fps,
-                 mirrored_input=True):
+                 mirrored_input=True, dominant_hand=None):
     lines = [f"fps: {fps:.1f}" + ("" if fps >= 11 else "   BELOW THE 11fps FLOOR"),
              f"raw handedness: {[l for _, l in detected] or '-'}   "
              f"(mirrored_input={mirrored_input})",
+             f"acting hand: {dominant_hand or '-'}   "
              f"dominant tracked: {'yes' if dom is not None else 'no'}"]
     for key, value in segmenter.debug_info().items():
         lines.append(f"{key}: {value}")
@@ -118,8 +119,11 @@ def draw_readout(frame, segmenter, dom, non, face, detected, fps,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--dominant", choices=["right", "left"], default="right",
-                        help="the signer's dominant hand")
+    parser.add_argument("--dominant", choices=["auto", "right", "left"],
+                        default="auto",
+                        help="the signer's dominant hand; 'auto' observes which "
+                             "hand is doing the work, which is the only option "
+                             "available when the signer is a stranger")
     parser.add_argument("--no-face", action="store_true")
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--confidence", type=float, default=0.70)
@@ -141,7 +145,12 @@ def main():
                  f"signs\ndiffering only in where they are made collapse "
                  f"together).")
 
-    dominant_hand = hands.LEFT if args.dominant == "left" else hands.RIGHT
+    fixed_dominant = None
+    if args.dominant == "right":
+        fixed_dominant = hands.RIGHT
+    elif args.dominant == "left":
+        fixed_dominant = hands.LEFT
+    acting = hands.ActingHandTracker(mirrored_input=mirrored)
     classify, model_note = load_classifier()
     segmenter = segment.ContinuousSegmenter(classify,
                                             min_confidence=args.confidence)
@@ -160,7 +169,7 @@ def main():
     if not cap.isOpened():
         sys.exit(f"Could not open camera {args.camera}.")
 
-    print(f"Veronica live -- {args.dominant}-dominant, {model_note}")
+    print(f"Veronica live -- dominant hand: {args.dominant}, {model_note}")
     print(f"Convention: {config.describe({'mirrored_input': mirrored})}")
     print("Press D for the readout. Q to quit.")
 
@@ -195,6 +204,11 @@ def main():
                     face_detector.detect_for_video(image, timestamp_ms),
                     frame_w, frame_h)
 
+            acting.update(timestamp_ms, [
+                ([(x * frame_w, y * frame_h) for x, y in points], label)
+                for points, label in detected])
+            dominant_hand = fixed_dominant or acting.signer_dominant()
+
             dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
                                            signer_dominant=dominant_hand,
                                            mirrored_input=mirrored)
@@ -216,7 +230,7 @@ def main():
                      len(detected), face_box)
             if show_readout:
                 draw_readout(frame, segmenter, dom, non, face, detected, fps,
-                             mirrored)
+                             mirrored, dominant_hand)
 
             cv2.imshow("Veronica -- live", frame)
 
@@ -225,6 +239,7 @@ def main():
                 break
             elif key == ord('r'):
                 segmenter.reset()
+                acting.reset()
                 english = ""
                 print("Reset.")
             elif key == ord('s'):

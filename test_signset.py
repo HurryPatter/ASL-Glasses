@@ -501,3 +501,37 @@ class TestHandCoverage(unittest.TestCase):
     def test_an_empty_clip_has_no_coverage(self):
         empty = signset.raw_clip("x", "A", "p", hands.RIGHT, 1, 1, [])
         self.assertEqual(signset.hand_coverage(empty), 0.0)
+
+
+class TestActingHand(unittest.TestCase):
+    """Observed, not asked -- the glasses cannot ask a stranger."""
+
+    def test_a_one_handed_clip_reports_the_hand_that_signed_it(self):
+        self.assertEqual(signset.acting_hand(clip(two_handed=False)), hands.RIGHT)
+
+    def test_the_convention_is_applied(self):
+        source = clip(two_handed=False, mirrored_input=False)
+        self.assertEqual(signset.acting_hand(source), hands.LEFT)
+
+    def test_either_hand_lands_in_the_dominant_slot(self):
+        # The point of the whole thing: a sign made with either hand must end
+        # up in one canonical space, since handedness is not phonemic in ASL.
+        right = signset.clip_to_samples(clip(two_handed=False))
+        mirrored = signset.clip_to_samples(clip(two_handed=False, mirror=True))
+        for sample in (right[0], mirrored[0]):
+            self.assertEqual(sample.features[hands.DOMINANT_OFFSET], 1.0)
+            self.assertEqual(sample.features[hands.NONDOMINANT_OFFSET], 0.0)
+
+    def test_an_explicit_override_still_wins(self):
+        source = clip(two_handed=False)
+        samples = signset.clip_to_samples(source, signer_dominant=hands.LEFT)
+        self.assertEqual(samples[0].features[hands.NONDOMINANT_OFFSET], 1.0)
+
+    def test_a_clip_with_no_hands_falls_back_to_what_was_recorded(self):
+        empty = signset.raw_clip("x", "A", "p", hands.LEFT, 640, 480,
+                                 [frame([], FACE_BOX, t) for t in (0, 100)])
+        self.assertEqual(signset.acting_hand(empty), hands.LEFT)
+
+    def test_it_is_recorded_as_metadata(self):
+        row = dict(zip(signset.HEADER, signset.clip_to_row(clip(two_handed=False))))
+        self.assertEqual(row["acting_hand"], hands.RIGHT)
