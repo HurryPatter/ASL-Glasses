@@ -203,6 +203,9 @@ def main():
     parser.add_argument("--no-face", action="store_true",
                         help="collect without location features (rarely what you want)")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--face-every", type=int, default=3,
+                        help="run the face detector every Nth frame (1 = every "
+                             "frame)")
     parser.add_argument("--mirrored-input", choices=["true", "false"],
                         help="override the stored handedness convention")
     args = parser.parse_args()
@@ -226,6 +229,7 @@ def main():
 
     landmarker = capture.build_landmarker(num_hands=2)
     face_detector = capture.build_face_detector() if use_face else None
+    faces = capture.PeriodicFace(face_detector, every=args.face_every)
 
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
@@ -303,11 +307,7 @@ def main():
             hand_result = landmarker.detect_for_video(image, timestamp_ms)
             detected = capture.detected_hands(hand_result)
 
-            face_box = None
-            if face_detector is not None:
-                face_box = capture.largest_face(
-                    face_detector.detect_for_video(image, timestamp_ms),
-                    frame_w, frame_h)
+            face_box = faces.update(image, timestamp_ms, frame_w, frame_h)
 
             event = due(state, timestamp_ms)
             if event == "start":

@@ -52,6 +52,37 @@ def build_face_detector(model_path=FACE_MODEL):
             min_detection_confidence=0.5))
 
 
+class PeriodicFace:
+    """Run the face detector every Nth frame and reuse the last box between.
+
+    The face detector is a whole second model per frame, and it is the largest
+    cost in the live loop after hand tracking. It is also the most wasteful:
+    a head moves slowly compared to hands, and location is measured in
+    face-widths, so a box a frame or two old is very nearly the same box.
+
+    The tradeoff is real but small -- during a fast head turn the box lags by
+    up to `every` frames, which shifts the location features slightly. Set
+    every=1 to disable.
+    """
+
+    def __init__(self, detector, every=3):
+        self.detector = detector
+        self.every = max(1, every)
+        self.box = None
+        self._count = 0
+
+    def update(self, image, timestamp_ms, frame_w, frame_h):
+        """-> the current normalized (x, y, w, h) box, or None."""
+        if self.detector is None:
+            return None
+        if self._count % self.every == 0:
+            self.box = largest_face(
+                self.detector.detect_for_video(image, timestamp_ms),
+                frame_w, frame_h)
+        self._count += 1
+        return self.box
+
+
 def to_mp_image(bgr_frame):
     import cv2
     return mp.Image(image_format=mp.ImageFormat.SRGB,

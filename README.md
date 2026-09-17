@@ -213,6 +213,7 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `test_dataset.py` | Offline schema/grouping tests |
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
+| `VERONICA.md` / `VERONICA_DESIGN.md` | Veronica roadmap / design notes |
 | `hands.py` | Two-hand + orientation feature layer (Veronica stage 1, stdlib only) |
 | `location.py` | Face-anchored sign location (Veronica stage 2, stdlib only) |
 | `sequence.py` | Clip → fixed-length sign vector (Veronica stage 3, stdlib only) |
@@ -249,7 +250,7 @@ recorded in `eval_results.csv` through both the old and the new implementation.
   landmark-geometry concept before `main` adopted an ML version of the same idea.
 - **`project-veronica`** — the extension from fingerspelling to actual ASL:
   two hands, orientation, location, movement and phrases. See `VERONICA.md`
-  for the staged plan. It adds files rather than rewriting the pipeline, so
+  for the roadmap and `VERONICA_DESIGN.md` for how it works. It adds files rather than rewriting the pipeline, so
   the thesis basis here keeps running throughout.
 
 > Note that `main` is currently **behind** the pipeline work — the debouncer
