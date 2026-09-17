@@ -613,9 +613,33 @@ and MOTHER being separable or not.
 
 ```bash
 python collect_signs.py            # SPACE start/stop, U undo, F readout
+python inspect_signs.py            # what is collected; a second read on handedness
+python inspect_signs.py MOTHER FATHER    # is the contrast in the features?
 python rebuild_signs.py --check    # what is collected, what is missing
 python train_signs.py              # once two people have signed the same signs
 ```
+
+### Ask "is the signal there?" before "how accurate is it?"
+
+`train_signs.py` answers how accurate the model is, and needs several signers
+before that means anything. `inspect_signs.py` answers an earlier question that
+needs no model and no second signer: **is the distinction in the features at
+all?**
+
+MOTHER against FATHER is the pair to ask it about, because they differ only in
+location. It reports the effect size per feature, which block of the
+representation carries the contrast, and a leave-one-clip-out accuracy from a
+single-threshold rule — about as little as a model can be, so a real classifier
+should beat it.
+
+If the contrast lives in the **location** block, stage 2 is doing real work. If
+it lives in handshape instead, the two signs are being made with different
+handshapes, which is a finding about the recording rather than the design. And
+if the clips show the signing hand landing in the **non-dominant** slot, the
+handedness convention is inverted — a better check than the camera one, because
+it is measured on the clips that were actually recorded.
+
+Nothing from this is an accuracy result: one person in one sitting.
 
 ### What "working" looks like before any data exists
 
