@@ -2,7 +2,7 @@ from symspellpy import SymSpell, Verbosity
 import pkg_resources
 
 # Team names -- always recognized, independent of academic/normal mode.
-TEAM_NAMES = ["omar", "hagar", "laila", "nourhan", "hassan"]
+TEAM_NAMES = ["omar", "hagar", "laila", "nourhan", "hassan", "crossfit"]
 
 # Static word signs, mapped to how they should be displayed. Anything the
 # classifier outputs that isn't a single letter is looked up here -- this is
