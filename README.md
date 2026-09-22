@@ -93,6 +93,12 @@ removed *by construction* — the same invariance that makes G and Q collapse
 together. So **tilt the hand and vary the handshape**; waving it around the
 frame produces duplicate feature vectors however different the picture looks.
 
+**Keep takes short and disciplined.** One signer recorded twice, first in ~20s
+takes and later in ~8s takes, is read by a model that has never seen her at
+74.4% and 92.1% respectively — same hands, same letters. Long takes drift into
+poses far from where other signers sit. Roughly 100 rows (~8 seconds) per label
+is both enough data and short enough to stay consistent.
+
 `evaluate.py` records **both the signer and the condition on every row**, so a
 run spanning several people and several environments can be split by either
 afterwards — one label for the whole run cannot tell "this person struggles"
@@ -151,31 +157,45 @@ and contain many such strings — see `NOTES.md`.
 `train_classifier.py` reports **leave-one-person-out** accuracy: train on
 everyone else, test on a signer the model has never seen.
 
+Five signers, 30,807 rows, averaged over three random seeds (see the note on
+seed variance below).
+
+| Held out | All 27 labels | Letters | Word signs |
+| --- | --- | --- | --- |
+| Hagar | 93.5% | 92.7% | 100% |
+| Nourhan | 90.8% | 90.8% | — |
+| Riad | 89.7% | 88.5% | 99.1% |
+| Omar | 83.0% | 83.0% | — |
+| Laila | 79.6% | 78.9% | 97.4% |
+| **Mean** | **87.3%** | **86.8%** | **~98.8%** |
+
 | Measurement | Result |
 | --- | --- |
 | Random 15% row split | 98.6% — **inflated, do not quote** |
-| **Held-out person, mean** | **84.0%** |
-| — held out Nourhan | 89.2% |
-| — held out Riad | 88.0% |
-| — held out Omar | 83.8% |
-| — held out Laila | 75.2% |
+| **Held-out person, letters** | **86.8%** |
+| **Held-out person, all 27** | **87.3%** |
 
-Four signers, 24,496 rows. The spread between signers is itself a result: the
-system's accuracy depends on how close a new signer's hand geometry is to those
-already collected, which is the argument for collecting more people rather than
-more frames.
+**The word signs transfer far better than the alphabet** (~98.8% vs 86.8%), and
+that is structural rather than luck: `ILY`, `IHATEYOU` and `HELLO` are grossly
+distinct handshapes, while the alphabet contains pairs the normalization
+genuinely collapses (see below). It argues for growing the word-sign vocabulary
+rather than chasing the last points on fingerspelling.
+
+**Quote a seed-averaged figure, never a single run.** Refitting one fold with a
+different `random_state` moves it by up to 5.4 points on the same data. Every
+number above is the mean of three seeds; single-run figures carry roughly
++/-2-3 points of noise, which is wider than most of the differences anyone would
+want to draw conclusions from.
 
 The gap is near-duplicate leakage: frames inside one recording burst are about
 5× closer to each other than two random frames of the same label, so a shuffled
 split trains on frame 200 and tests on frame 201. The held-out-person number is
 what a stranger at a demo experiences.
 
-`ILY`, `IHATEYOU` and `HELLO` are **still excluded** from the figure above. The
-original rows were recorded by three signers in one sitting with no boundary in
-the file showing where one stops, so they are marked `unknown` (trained on in
-every fold, never tested on). Riad is the only identified signer for them, and
-cross-person testing needs two. One more person signing those three closes it
-— about 90 seconds of recording.
+`ILY`, `IHATEYOU` and `HELLO` are now validated across people: Riad, Hagar and
+Laila have each signed them with the signer recorded. The original 1,299 rows
+stay marked `unknown` (three signers in one sitting, no boundary in the file
+showing where one stops) and are trained on in every fold but never tested on.
 
 The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/242)
 — both bigger than G→Q (146), which the in-sample number hid entirely.

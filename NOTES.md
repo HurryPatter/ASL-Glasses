@@ -44,9 +44,30 @@ Measured on the three signers, on letters only:
 | Measurement | Accuracy |
 | --- | --- |
 | Random 15% row split | 98.6% |
-| Leave-one-person-out | **84.0%** (nourhan 89.2, riad 88.0, omar 83.8, laila 75.2) |
+| Leave-one-person-out, letters | **86.8%** |
+| Leave-one-person-out, all 27 labels | **87.3%** |
+| — word signs alone | **~98.8%** |
 
-*(Four signers, 24,496 rows. Was 79.3% on three signers before Riad was added.)*
+Five signers, 30,807 rows, averaged over seeds (0, 42, 123). Per fold, all 27
+labels: hagar 93.5, nourhan 90.8, riad 89.7, omar 83.0, laila 79.6.
+
+### Never quote a single run
+
+Refitting one fold with a different `random_state` moves it by up to **5.4
+points** on identical data (omar's fold: 81.3 / 82.9 / 85.1 / 86.7 across four
+seeds). Single-seed figures therefore carry roughly +/-2-3 points of noise,
+which is wider than most differences worth drawing conclusions from — an
+earlier 2.5-point "drop" in omar's fold was chased before this was measured,
+and turned out to be nothing. Report the mean of several seeds with its spread.
+
+### Word signs beat the alphabet, and that is a result
+
+~98.8% cross-person against 86.8% for letters, holding even for the hardest
+signer (laila 97.4%). The three word signs are grossly distinct handshapes,
+whereas the alphabet contains pairs this representation collapses. It argues
+for growing the static word-sign vocabulary rather than chasing the last points
+on fingerspelling — the architecture already supports it (add the label to
+WORDS, the phrase to WORD_SIGNS, collect, retrain).
 
 It also answers how much more data to collect:
 
@@ -71,6 +92,36 @@ attributed the historical rows from the recording structure), `collect_data.py`
 asks who is signing, and `train_classifier.py` reports leave-one-person-out as
 the headline with the random-split figure printed only as an explicitly
 inflated comparison.
+
+### It is the take that is the outlier, not the signer
+
+**Superseded reading below.** Laila's low fold was first explained as
+distinctive hand geometry. Her second recording session disproves that: the
+same hands, scored by a model that has never seen her either way, give
+
+| Laila's rows | Cross-person accuracy |
+| --- | --- |
+| First session (7,800 rows, old recording advice, ~20s takes) | **74.4%** |
+| Second session (3,203 rows, corrected advice, ~8s takes) | **92.1%** |
+
+If it were her hands, both would score alike. What differs is the session. Two
+candidates, not separable from this data: how she signed (the first session used
+the movement advice that turned out to be a no-op, over long takes that drift
+into poses far from where everyone else sits), or landmark quality under
+different lighting. Either way the conclusion is the same and it is a better
+one than "Laila is unusual":
+
+**This pipeline is sensitive to how consistently someone signs relative to the
+training distribution, not to whose hands they are.** A signer who drifts
+produces poses the model has not seen; the same signer recorded tightly reads
+at 92%.
+
+Note also that her fold rising 74.4% -> 79.6% after the second session is **not
+an improvement in generalisation** — it is test-set composition. Her old rows
+still score 74.4%; the fold moved only because 3,203 easier rows joined the
+7,800 hard ones: (7800*0.744 + 3203*0.921)/11003 = 0.796. The genuine effect of
+her new data shows up in *other* folds, whose test sets did not change: nourhan
+89.2 -> 90.8, hagar 92.5 -> 93.5, riad ~88.6 -> 89.7, omar unchanged.
 
 ### An outlier signer is not bad data — do not re-collect them
 
@@ -125,9 +176,14 @@ the drift that does count.
 The guidance in `collect_data.py` and `README.md` has been corrected
 accordingly. Tell the next person to **tilt the hand and vary finger curl**.
 
-The fix for a low outlier fold is **more different people**, each of which
-widens the space her hands sit inside. Re-recording her "more carefully" would
-narrow the variety that is currently helping, and risks lowering the mean.
+The fix for a low outlier fold was thought to be **more different people**.
+That was half right. Her rows genuinely do help everyone else and deleting them
+would cost up to 3.7 points, so the "do not delete" conclusion stands. But the
+prediction that re-recording her could not help was wrong on one point: a
+second, tighter take from the same person reads at 92% where the first reads at
+74% (see the section above), so recording *discipline* matters as much as
+recruiting more people. Both takes are kept — the first still contributes
+variety no one else supplies.
 
 **`ILY`, `IHATEYOU` and `HELLO` cannot be validated across people.** All three
 signers recorded them in one sitting, and since each label is a single
