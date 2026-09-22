@@ -57,7 +57,8 @@ on Linux/macOS everything else works, but speech output will not.
 | `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak · `d` motion debug readout |
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
 | `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
-| `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing and under what condition → appends to `eval_results.csv` | `SPACE` start 4s capture · `n` skip · `q` quit |
+| `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing and under what condition → appends to `eval_results.csv`. `--width/--height/--fps` emulate slower hardware | `SPACE` start 4s capture · `n` skip · `q` quit |
+| `python hw_report.py` | Summarise `eval_results.csv` by hardware profile | — |
 
 `collect_data.py` asks who is signing and **appends** (never overwrites), so data
 from multiple people accumulates.
@@ -199,6 +200,37 @@ showing where one stops) and are trained on in every fold but never tested on.
 
 The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/242)
 — both bigger than G→Q (146), which the in-sample number hid entirely.
+
+## Choosing the embedded target
+
+The hardware decision turns on two numbers that can be measured on the
+development laptop, for free, before anything is bought:
+
+```bash
+python evaluate.py                                # baseline
+python evaluate.py --width 320 --height 240       # does accuracy survive low resolution?
+python evaluate.py --fps 15                       # ...and a slow frame rate?
+python evaluate.py --fps 12
+python evaluate.py --fps 10
+python hw_report.py                               # compare them
+```
+
+`--fps` drops frames that arrive early rather than sleeping, so it emulates a
+board that cannot keep up. Timestamps stay real throughout, which is why
+`debouncer.py` and `motion.py` were written against the wall clock rather than
+frame counts — they behave under emulation exactly as they would on slow
+hardware.
+
+**There is a hard floor at ~10.8fps.** `motion.py` needs 8 trajectory samples
+inside a 650ms window, so below `(8-1)*1000/650` **J and Z cannot fire at all**,
+however well the gesture is performed. Static letters have no such cliff. That
+is why `hw_report.py` breaks them out separately: a profile whose J/Z column
+collapses while static holds is hitting the floor, not losing accuracy.
+
+Resolution matters more than it looks: the pipeline consumes landmarks, not
+pixels, and reported figures put MediaPipe at 25+fps at 320x240 against 8-15 at
+default — a larger effect than the gap between candidate boards. If accuracy
+holds at 320x240, the hardware requirement drops sharply.
 
 ## Tests
 

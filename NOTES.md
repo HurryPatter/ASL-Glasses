@@ -345,6 +345,24 @@ this is reachable in normal use, not just adversarially. Not yet fixed.
 
 ### Hardware target still undecided
 
+**Measure before buying.** `evaluate.py --width/--height/--fps` emulates slower
+hardware on the laptop and `hw_report.py` compares the runs; see the README.
+The two numbers that decide it are whether accuracy survives 320x240, and how
+low the frame rate can go before recognition degrades.
+
+Two things learned building that emulation:
+
+- A frame-rate cap has to be scheduled by an accumulating deadline, not by
+  measuring from the last kept frame. Frames arrive only on the camera's grid,
+  so "wait a full interval" quantises downward: a 12fps cap on a 30fps camera
+  keeps every third frame and delivers **10fps** — below the J/Z floor, which
+  would have made a 12fps run look like a motion-detection failure when it was
+  really an arithmetic one.
+- The achievable caps on a 30fps camera are otherwise 30, 15, 10, 7.5... so
+  without that fix the only honest test points would have been 15 and 10.
+
+
+
 True MCU (ESP32/STM32-class) vs. small Linux SBC (Pi Zero 2 W / Jetson-Nano
 class). This matters a lot: MediaPipe needs real compute and does not run on
 bare MCUs, so an MCU target likely means the glasses only do capture and

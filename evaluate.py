@@ -30,6 +30,9 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+import argparse
+
+import hwprofile
 from debouncer import Debouncer
 from motion import MotionDetector
 
@@ -57,8 +60,13 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
     return local.flatten()
 
 
-RESULTS_HEADER = ["person", "condition", "expected", "committed", "correct"]
-LEGACY_RESULTS_HEADER = ["condition", "expected", "committed", "correct"]
+RESULTS_HEADER = ["person", "condition", "profile", "width", "height",
+                  "fps_cap", "fps_actual", "expected", "committed", "correct"]
+# Older layouts, migrated in place on first run rather than left incomparable.
+LEGACY_HEADERS = [
+    ["condition", "expected", "committed", "correct"],
+    ["person", "condition", "expected", "committed", "correct"],
+]
 
 
 def ask(prompt, default):
@@ -67,23 +75,31 @@ def ask(prompt, default):
 
 
 def open_results():
-    """Append to eval_results.csv, migrating the pre-`person` header if needed.
+    """Append to eval_results.csv, migrating older layouts in place.
 
-    Without `person`, a run across several people and several environments
-    cannot separate the two effects afterwards -- which is the whole point of
-    running it. Existing rows are marked `unknown` rather than attributed.
+    Two columns were added over time and both matter for comparing runs:
+    `person`, without which a multi-person multi-environment run cannot be
+    split by either afterwards, and the hardware-profile columns, without
+    which a 320x240 run is indistinguishable from a native-resolution one.
+    Rows predating a column are filled with what is actually known about them
+    -- 'unknown' for the signer, native/uncapped for the profile, since every
+    earlier run was at the camera's own resolution and frame rate.
     """
     if os.path.exists(RESULTS_PATH):
         with open(RESULTS_PATH, newline="") as fh:
             rows = list(csv.reader(fh))
-        if rows and rows[0] == LEGACY_RESULTS_HEADER:
+        if rows and rows[0] in LEGACY_HEADERS:
+            old = rows[0]
+            pad_person = ["unknown"] if old[0] != "person" else []
             with open(RESULTS_PATH, "w", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(RESULTS_HEADER)
                 for r in rows[1:]:
-                    w.writerow(["unknown"] + r)
-            print(f"Migrated {len(rows)-1} existing rows in {RESULTS_PATH}: "
-                  f"they predate the `person` column and are marked 'unknown'.")
+                    r = pad_person + r
+                    # person, condition, [profile...], expected, committed, correct
+                    w.writerow(r[:2] + ["native@uncapped", "", "", "", ""] + r[2:])
+            print(f"Migrated {len(rows)-1} existing rows in {RESULTS_PATH} to the "
+                  f"current layout (earlier runs were native resolution, uncapped).")
         csv_file = open(RESULTS_PATH, "a", newline="")
         return csv_file, csv.writer(csv_file)
 
@@ -93,7 +109,26 @@ def open_results():
     return csv_file, writer
 
 
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Accuracy benchmark. --width/--height/--fps emulate slower "
+                    "hardware on this laptop, to decide the embedded target "
+                    "before buying one.")
+    p.add_argument("--width", type=int, default=None,
+                   help="capture width, e.g. 320 (default: the camera's own)")
+    p.add_argument("--height", type=int, default=None,
+                   help="capture height, e.g. 240")
+    p.add_argument("--fps", type=float, default=None,
+                   help="process at most this many frames per second; extra "
+                        "frames are dropped unprocessed, emulating a board "
+                        f"that cannot keep up. Below "
+                        f"{hwprofile.motion_floor_fps():.1f} J and Z cannot "
+                        f"fire at all.")
+    return p.parse_args()
+
+
 def main():
+    args = parse_args()
     # Both are recorded per row so a multi-person, multi-environment run can
     # be split by either afterwards. One label for the whole run cannot tell
     # "this person struggles" from "this lighting is hard".
@@ -117,6 +152,21 @@ def main():
     )
 
     cap = cv2.VideoCapture(0)
+    if args.width and args.height:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    # Cameras snap to the nearest mode they support, so record what was
+    # actually delivered rather than what was requested.
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if args.width and (actual_w, actual_h) != (args.width, args.height):
+        print(f"NOTE: asked for {args.width}x{args.height}, camera gave "
+              f"{actual_w}x{actual_h}. Logging what it gave.")
+    limiter = hwprofile.FrameLimiter(args.fps)
+    profile = hwprofile.describe(actual_w, actual_h, args.fps)
+    if args.fps and args.fps < hwprofile.motion_floor_fps():
+        print(f"NOTE: {args.fps}fps is below the {hwprofile.motion_floor_fps():.1f}fps "
+              f"floor -- J and Z cannot fire at this rate, by construction.")
     start_time = time.monotonic()
 
     csv_file, writer = open_results()
@@ -139,10 +189,18 @@ def main():
         ret, frame = cap.read()
         if not ret:
             break
+        timestamp_ms = int((time.monotonic() - start_time) * 1000)
+        if not limiter.should_process(timestamp_ms):
+            # Dropped before any processing: this is what a board that cannot
+            # keep up would do. Still service the keyboard so the run stays
+            # controllable at low frame rates.
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            continue
+
         frame = cv2.flip(frame, 1)
         h, w = frame.shape[:2]
         frame_no += 1
-        timestamp_ms = int((time.monotonic() - start_time) * 1000)
 
         target = TARGET_LETTERS[letter_idx]
 
@@ -183,7 +241,9 @@ def main():
                 committed = debouncer.confirmed_string[baseline_len:]
                 correct = target in committed
                 results.append((target, committed, correct))
-                writer.writerow([person, condition, target, committed, correct])
+                writer.writerow([person, condition, profile, actual_w, actual_h,
+                                 args.fps or "", f"{limiter.achieved_fps():.1f}",
+                                 target, committed, correct])
                 csv_file.flush()
                 print(f"  {target}: got '{committed}' -> {'OK' if correct else 'MISS'}")
                 capturing = False
@@ -204,7 +264,9 @@ def main():
             break
         elif key == ord('n') and not capturing:
             results.append((target, "", False))
-            writer.writerow([person, condition, target, "", False])
+            writer.writerow([person, condition, profile, actual_w, actual_h,
+                             args.fps or "", f"{limiter.achieved_fps():.1f}",
+                             target, "", False])
             letter_idx += 1
         elif key == ord(' ') and not capturing:
             capturing = True
@@ -220,7 +282,11 @@ def main():
     # ── This run's summary ───────────────────────────────────────────────
     if results:
         n_correct = sum(1 for _, _, ok in results if ok)
-        print(f"\n{person} / {condition}: {n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
+        print(f"\n{person} / {condition} / {profile}: "
+              f"{n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
+        print(f"  camera delivered {limiter.capture_fps():.1f}fps, "
+              f"pipeline processed {limiter.achieved_fps():.1f}fps "
+              f"({limiter.processed} of {limiter.seen} frames)")
         misses = [(t, c) for t, c, ok in results if not ok]
         if misses:
             print("Missed:", ", ".join(f"{t}->'{c}'" for t, c in misses))
