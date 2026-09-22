@@ -109,6 +109,25 @@ def open_results():
     return csv_file, writer
 
 
+def void_last_row(csv_file):
+    """Remove the most recently written row and reopen for appending.
+
+    Rows are flushed as each capture completes, so a run survives a crash.
+    That means undo cannot just forget a buffered row -- it has to rewrite the
+    file. The file is small and this happens at human speed, so the simplest
+    correct thing is to close, drop the final line, and reopen.
+    """
+    csv_file.close()
+    with open(RESULTS_PATH, newline="") as fh:
+        rows = list(csv.reader(fh))
+    if len(rows) > 1:
+        rows = rows[:-1]
+    with open(RESULTS_PATH, "w", newline="") as fh:
+        csv.writer(fh).writerows(rows)
+    fh2 = open(RESULTS_PATH, "a", newline="")
+    return fh2, csv.writer(fh2)
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Accuracy benchmark. --width/--height/--fps emulate slower "
@@ -118,13 +137,30 @@ def parse_args():
                    help="capture width, e.g. 320 (default: the camera's own)")
     p.add_argument("--height", type=int, default=None,
                    help="capture height, e.g. 240")
+    p.add_argument("--letters", default=None,
+                   help="only these letters, e.g. JZ. The default alphabet pass "
+                        "gives one J and one Z per five-minute run, which is far "
+                        "too few to measure the motion signs -- they are the ones "
+                        "that fail first as the frame rate drops.")
+    p.add_argument("--repeat", type=int, default=1,
+                   help="repeat the letter set this many times, cycling rather "
+                        "than blocking (J Z J Z ... not J J ... Z Z), so fatigue "
+                        "and habituation do not load onto one sign.")
     p.add_argument("--fps", type=float, default=None,
                    help="process at most this many frames per second; extra "
                         "frames are dropped unprocessed, emulating a board "
                         f"that cannot keep up. Below "
                         f"{hwprofile.motion_floor_fps():.1f} J and Z cannot "
                         f"fire at all.")
-    return p.parse_args()
+    a = p.parse_args()
+    letters = (a.letters or TARGET_LETTERS).upper()
+    bad = [c for c in letters if c not in TARGET_LETTERS]
+    if bad:
+        p.error(f"not letters: {''.join(bad)}")
+    if a.repeat < 1:
+        p.error("--repeat must be at least 1")
+    a.sequence = list(letters) * a.repeat
+    return a
 
 
 def main():
@@ -171,7 +207,9 @@ def main():
 
     csv_file, writer = open_results()
 
+    sequence = args.sequence
     results = []  # (expected, committed, correct) for this run's summary
+    run_rows = 0  # rows this run has written, so X can never void an older one
 
     letter_idx = 0
     capturing = False
@@ -182,10 +220,15 @@ def main():
     consecutive_missed = 0
     baseline_len = 0  # confirmed_string length when the capture window started
 
-    print(f"\nRunning eval for condition: {condition}")
-    print("SPACE = start capture | N = skip | Q = quit\n")
+    print(f"\nRunning eval for condition: {condition} / {profile}")
+    print(f"{len(sequence)} captures: {' '.join(sequence[:12])}"
+          f"{' ...' if len(sequence) > 12 else ''}")
+    print("SPACE = start capture | X = void the last one | N = skip | Q = quit")
+    print("Press X whenever you fumble a sign -- a forgotten or wrong handshape")
+    print("is your error, not the pipeline's, and it moves a 25-capture run by")
+    print("four points.\n")
 
-    while letter_idx < len(TARGET_LETTERS):
+    while letter_idx < len(sequence):
         ret, frame = cap.read()
         if not ret:
             break
@@ -202,7 +245,7 @@ def main():
         h, w = frame.shape[:2]
         frame_no += 1
 
-        target = TARGET_LETTERS[letter_idx]
+        target = sequence[letter_idx]
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -245,7 +288,9 @@ def main():
                                  args.fps or "", f"{limiter.achieved_fps():.1f}",
                                  target, committed, correct])
                 csv_file.flush()
-                print(f"  {target}: got '{committed}' -> {'OK' if correct else 'MISS'}")
+                run_rows += 1
+                print(f"  {target}: got '{committed}' -> "
+                      f"{'OK' if correct else 'MISS'}   (X to void)")
                 capturing = False
                 letter_idx += 1
 
@@ -253,9 +298,9 @@ def main():
         status = f"CAPTURING ({CAPTURE_WINDOW_S - (time.monotonic() - capture_start):.1f}s)" if capturing else "ready"
         cv2.putText(frame, f"Sign: {target}   [{status}]", (10, 40),
                     cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
-        cv2.putText(frame, f"Progress: {letter_idx}/{len(TARGET_LETTERS)}", (10, 75),
+        cv2.putText(frame, f"Progress: {letter_idx}/{len(sequence)}", (10, 75),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-        cv2.putText(frame, "SPACE=capture  N=skip  Q=quit", (10, h - 15),
+        cv2.putText(frame, "SPACE=capture  X=void last  N=skip  Q=quit", (10, h - 15),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
         cv2.imshow("Evaluation", frame)
 
@@ -267,7 +312,20 @@ def main():
             writer.writerow([person, condition, profile, actual_w, actual_h,
                              args.fps or "", f"{limiter.achieved_fps():.1f}",
                              target, "", False])
+            csv_file.flush()
+            run_rows += 1
             letter_idx += 1
+        elif key == ord('x') and not capturing:
+            # Only ever voids a row this run wrote, never one from an earlier
+            # session that happens to be last in the file.
+            if run_rows and results:
+                voided = results.pop()
+                csv_file, writer = void_last_row(csv_file)
+                run_rows -= 1
+                letter_idx -= 1
+                print(f"  voided {voided[0]} -> '{voided[1]}'; sign it again")
+            else:
+                print("  nothing from this run to void")
         elif key == ord(' ') and not capturing:
             capturing = True
             capture_start = time.monotonic()

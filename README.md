@@ -209,11 +209,22 @@ development laptop, for free, before anything is bought:
 ```bash
 python evaluate.py                                # baseline
 python evaluate.py --width 320 --height 240       # does accuracy survive low resolution?
-python evaluate.py --fps 15                       # ...and a slow frame rate?
-python evaluate.py --fps 12
-python evaluate.py --fps 10
+python evaluate.py --letters JZ --repeat 10 --fps 15   # where do the motion signs die?
+python evaluate.py --letters JZ --repeat 10 --fps 20
+python evaluate.py --letters JZ --repeat 10            # uncapped, for comparison
 python hw_report.py                               # compare them
 ```
+
+**Press X to void a capture you fumbled.** A forgotten or wrong handshape is
+your error, not the pipeline's, and on a 25-capture run one of them moves the
+result by four points — enough to swamp the effect being measured. X deletes
+the row just written and re-queues the letter.
+
+**Use `--letters JZ --repeat 10` for frame-rate questions.** A full alphabet
+pass yields one J and one Z per five-minute run, which is the worst possible
+sampling for the only signs that clearly degrade with frame rate. The letter
+set cycles rather than blocks (J Z J Z ... not J J ... Z Z) so fatigue does not
+load onto one sign.
 
 `--fps` drops frames that arrive early rather than sleeping, so it emulates a
 board that cannot keep up. Timestamps stay real throughout, which is why
