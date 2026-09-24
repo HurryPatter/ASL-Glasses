@@ -201,6 +201,51 @@ showing where one stops) and are trained on in every fold but never tested on.
 The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/242)
 — both bigger than G→Q (146), which the in-sample number hid entirely.
 
+## Running on a Raspberry Pi
+
+Setup and the first measurement, in order. **Raspberry Pi OS must be 64-bit** —
+the MediaPipe wheels are arm64 only.
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo apt install -y python3-venv git libgl1 libglib2.0-0
+
+git clone https://github.com/HurryPatter/ASL-Glasses.git
+cd ASL-Glasses
+
+python3 -m venv .venv            # required: Pi OS Bookworm refuses system-wide pip
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python bench_pi.py --seconds 120          # the number that decides the board
+python bench_pi.py --width 320 --height 240 --seconds 120
+```
+
+`bench_pi.py` runs the hand landmarker with no GUI and no classifier, printing
+fps every 10s along with core temperature. Run it for minutes, not seconds: a
+Pi throttles as it heats, and the sustained figure is the one that matters.
+
+| Measured fps | What works |
+| --- | --- |
+| >= 25-30 | motion signs (J/Z) too — full alphabet |
+| 12-25 | static letters and word signs; J/Z unreliable |
+| < 12 | static letters degrade as well, badly at low resolution |
+
+**Known blockers on Linux, both expected:**
+
+- `audio.py` shells out to Windows PowerShell and will not run. Replace with
+  `espeak-ng` (tiny, robotic) or `piper` (neural, much better for a demo).
+  Porting it also removes the unescaped-interpolation bug in that file.
+- A **CSI ribbon camera** is not visible to `cv2.VideoCapture` on Bookworm,
+  which uses libcamera; that needs `picamera2`. A **USB webcam** works with the
+  existing code unchanged, so start there.
+- The Pi 5 has no 3.5mm jack (the PCIe slot took its place). Use a USB audio
+  adapter or an I2S DAC.
+
+`main.py`, `collect_data.py` and `evaluate.py` all open a preview window, so
+they need a desktop session or VNC. `bench_pi.py` does not, which is why it is
+the first thing to run.
+
 ## Choosing the embedded target
 
 The hardware decision turns on two numbers that can be measured on the
