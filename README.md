@@ -208,7 +208,7 @@ the MediaPipe wheels are arm64 only.
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y python3-venv git libgl1 libglib2.0-0
+sudo apt install -y python3-venv git libgl1 libglib2.0-0 libegl1 libgles2
 
 git clone https://github.com/HurryPatter/ASL-Glasses.git
 cd ASL-Glasses
@@ -220,6 +220,16 @@ pip install -r requirements.txt
 python bench_pi.py --seconds 120          # the number that decides the board
 python bench_pi.py --width 320 --height 240 --seconds 120
 ```
+
+`libegl1`/`libgles2` are needed by MediaPipe 1.0's native library even with no
+display attached; the Desktop image has them, a Lite image may not, and the
+failure (`OSError: libEGL.so.1: cannot open shared object file`) is not obvious.
+
+**`requirements.txt` pins exact versions, deliberately.** The model is a pickle
+and scikit-learn only guarantees one loads correctly under the version that
+wrote it, so the model and the pins are a matched pair: change them together
+with a retrain, never separately. The pinned set is verified to resolve on the
+Pi 5 under both Python 3.11 (Bookworm) and 3.13 (Trixie).
 
 `bench_pi.py` runs the hand landmarker with no GUI and no classifier, printing
 fps every 10s along with core temperature. Run it for minutes, not seconds: a

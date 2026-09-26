@@ -1,15 +1,30 @@
-# Runtime pipeline (main.py, collect_data.py, evaluate.py)
-mediapipe>=0.10.9        # hand landmarker (hand_landmarker.task)
-opencv-python>=4.8       # camera capture + on-screen overlay
-numpy>=1.24              # landmark normalization
-scikit-learn>=1.3        # MLPClassifier -- the static landmark classifier
-joblib>=1.3              # model load/save
-symspellpy>=6.7          # spelling correction / word segmentation
-setuptools>=65           # provides pkg_resources, used to locate symspellpy's dictionary
+# Exact versions, pinned on purpose.
+#
+# landmark_model.joblib is a pickle, and scikit-learn only guarantees a pickle
+# loads correctly under the version that wrote it -- the previous model was
+# pickled with 1.5.2 and warned "might lead to breaking code or invalid
+# results" under a fresh install's 1.9.1. It has been retrained under exactly
+# these versions, so change them together with a retrain, never separately.
+#
+# Verified to resolve on the Pi 5 (aarch64) under both Python 3.11 (Pi OS
+# Bookworm) and 3.13 (Trixie). mediapipe 1.0 and opencv-python 5.0 are major
+# version bumps from what this code was first written against; every call the
+# pipeline makes into both was checked against them.
+
+# Runtime pipeline (main.py, collect_data.py, evaluate.py, bench_pi.py)
+mediapipe==1.0.1           # hand landmarker; needs libEGL at runtime (apt: libegl1)
+opencv-python==5.0.0.93    # camera capture + preview window
+numpy==2.4.6               # landmark normalization
+scikit-learn==1.9.1        # MLPClassifier -- must match the pickled model
+joblib==1.6.0              # model load/save
+symspellpy==6.10.0         # spelling correction / word segmentation
 
 # Training only (train_classifier.py)
-pandas>=2.0
+pandas==3.0.6
 
-# NOTE: TensorFlow/Keras are deliberately absent. The pipeline moved from a
-# Keras CNN over pixel crops to a scikit-learn MLP over MediaPipe landmarks;
-# nothing in the codebase imports TF any more.
+# setuptools is deliberately NOT listed: nlp_bridge.py used its pkg_resources
+# module, which setuptools 84 removed, so a fresh install crashed on import.
+# It now uses importlib.resources from the standard library.
+#
+# TensorFlow/Keras are deliberately absent too: the pipeline moved from a Keras
+# CNN over pixel crops to a scikit-learn MLP over MediaPipe landmarks.
