@@ -5,9 +5,8 @@
 # debouncer committing a letter twice), never recognition accuracy. Accuracy
 # still comes from running evaluate.py by hand.
 #
-# No pip install step on purpose -- the test modules import only debouncer.py
-# and dataset.py plus the standard library, so they need neither MediaPipe nor
-# scikit-learn and finish in seconds.
+# Only symspellpy is installed -- not MediaPipe or scikit-learn -- so the job
+# still finishes in seconds and needs no camera or trained model.
 name: tests
 
 on: [push, pull_request]
@@ -21,6 +20,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      # The one dependency the tests need: nlp_bridge.py's tests guard the
+      # pkg_resources crash and the per-frame correction cache. Pinned to match
+      # requirements.txt. Everything else stays standard-library only.
+      - name: Install test dependencies
+        run: pip install symspellpy==6.10.0
 
       - name: Run offline tests
         run: python -m unittest discover -p "test_*.py" -v
