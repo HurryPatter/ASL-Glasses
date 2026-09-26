@@ -66,11 +66,15 @@ of a camera can be judged before a collection session rather than after one.
 
 ### Where the data stands
 
-250 clips, 13 signs, one signer. A leave-one-clip-out **nearest-centroid floor
-of 83.2%** (chance 7.7%) — the crudest possible classifier, so a real one should
-beat it. The mistakes are phonologically sensible rather than random:
-MOTHER/FATHER→HELLO are all near the head, TOMORROW→YESTERDAY differ mainly in
-movement direction, YOU→ME are both pointing signs.
+250 clips, 13 signs, one signer. Measured the way the live demo actually
+classifies — a 900 ms window — a leave-one-clip-out **nearest-centroid floor of
+85.6%** (chance 7.7%). The crudest possible classifier, so a real one should
+beat it. It was 69.6% before training switched to live-length windows and gap
+bridging stopped smearing ghost hands.
+
+The remaining mistakes are close pairs rather than random:
+TOMORROW→YESTERDAY differ mainly in movement direction, PLEASE→SORRY share a
+movement, YOU↔ME are both pointing signs.
 
 **None of that is an accuracy result.** One person in one sitting measures those
 recordings, not the language.
@@ -109,5 +113,11 @@ same mistake as quoting a shuffled-split accuracy.
   not encoded anywhere in the repository and should come from a dictionary and
   a fluent signer.
 - **Frame rate is 15–25 fps on the dev laptop.** Above the ~11 fps floor, with
-  little headroom. See the design doc on why blur, not fps, is the thing to fix
-  for quick movements.
+  little headroom. The DirectShow camera backend may raise it on Windows (run
+  `check_setup.py` with and without `--default-backend` to compare). See the
+  design doc on why blur, not fps, is the thing to fix for quick movements.
+- **No live accuracy measurement.** Every number above is offline. A script
+  that prompts a sign and records what the live pipeline commits is the next
+  measurement worth building.
+- **No `_REST` clips.** The segmenter's main defence against transitions being
+  read as signs; currently only the confidence floor does that job.

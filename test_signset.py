@@ -535,3 +535,51 @@ class TestActingHand(unittest.TestCase):
     def test_it_is_recorded_as_metadata(self):
         row = dict(zip(signset.HEADER, signset.clip_to_row(clip(two_handed=False))))
         self.assertEqual(row["acting_hand"], hands.RIGHT)
+
+
+class TestTrainingWindows(unittest.TestCase):
+    """Train on what the live segmenter sees: windows, not whole takes."""
+
+    def test_a_long_clip_is_cut_into_overlapping_windows(self):
+        long_clip = clip(frames=60, duration_ms=2400)
+        windows = signset.clip_windows(long_clip, length_ms=900, step_ms=300)
+        self.assertGreaterEqual(len(windows), 5)
+        for window in windows:
+            self.assertLessEqual(signset.clip_span_ms(window), 900)
+
+    def test_each_window_starts_at_zero(self):
+        for window in signset.clip_windows(clip(frames=60, duration_ms=2400)):
+            self.assertEqual(window["frames"][0]["t"], 0)
+
+    def test_windows_keep_the_parent_clip_id(self):
+        # So a split by clip keeps a take's overlapping windows together
+        # rather than scoring near-duplicates against each other.
+        parent = clip(frames=60, duration_ms=2400)
+        ids = {w["clip_id"] for w in signset.clip_windows(parent)}
+        self.assertEqual(ids, {parent["clip_id"]})
+
+    def test_a_short_clip_comes_back_whole(self):
+        short = clip(frames=12, duration_ms=700)
+        self.assertEqual(signset.clip_windows(short), [short])
+
+    def test_the_parent_clip_is_not_modified(self):
+        parent = clip(frames=60, duration_ms=2400)
+        before = json.dumps(parent, sort_keys=True)
+        signset.clip_windows(parent)
+        self.assertEqual(json.dumps(parent, sort_keys=True), before)
+
+    def test_every_window_makes_a_full_row(self):
+        for window in signset.clip_windows(clip(frames=60, duration_ms=2400)):
+            self.assertEqual(len(signset.clip_to_row(window)), len(signset.HEADER))
+
+    def test_training_and_live_windows_are_the_same_length(self):
+        # The mismatch this exists to prevent: whole-take training against
+        # 900ms live windows cost ~12 points on the first 250 clips.
+        import inspect
+        import segment
+        default = inspect.signature(
+            segment.ContinuousSegmenter.__init__).parameters["window_ms"].default
+        window = inspect.signature(
+            signset.clip_windows).parameters["length_ms"].default
+        self.assertEqual(default, window)
+        self.assertEqual(default, sequence.SIGN_WINDOW_MS)

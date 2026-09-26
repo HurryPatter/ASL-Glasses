@@ -126,6 +126,9 @@ def main():
                              "available when the signer is a stranger")
     parser.add_argument("--no-face", action="store_true")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--default-backend", action="store_true",
+                        help="use OpenCV's default camera backend instead of "
+                             "DirectShow+MJPG on Windows (for comparing fps)")
     parser.add_argument("--confidence", type=float, default=0.70)
     parser.add_argument("--face-every", type=int, default=3,
                         help="run the face detector every Nth frame (1 = every "
@@ -171,7 +174,7 @@ def main():
     except Exception:
         pass                       # TTS is Windows-only; the HUD still works
 
-    cap = cv2.VideoCapture(args.camera)
+    cap = capture.open_camera(args.camera, args.default_backend)
     if not cap.isOpened():
         sys.exit(f"Could not open camera {args.camera}.")
 
@@ -214,6 +217,15 @@ def main():
             dom, non, face = capture.scene(detected, face_box, frame_w, frame_h,
                                            signer_dominant=dominant_hand,
                                            mirrored_input=mirrored)
+
+            # One visible hand is the dominant hand -- one-handed ASL signs are
+            # made with it. Offline, a label flip is voted away over the whole
+            # clip; live there is no clip to vote over, so without this a
+            # single flipped frame drops the hand into the other slot. Kept out
+            # of capture.scene() on purpose: check_setup.py uses that to test
+            # the handedness convention, and this would make it always pass.
+            if len(detected) == 1 and dom is None:
+                dom, non = non, None
 
             if dom is None and non is None:
                 committed = segmenter.update(timestamp_ms)

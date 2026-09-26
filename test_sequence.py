@@ -405,13 +405,44 @@ class TestTrackingGaps(unittest.TestCase):
         flags = [v[hands.DOMINANT_OFFSET] for v in filled]
         self.assertIn(0.0, flags)
 
-    def test_a_gap_at_the_very_start_takes_the_first_real_geometry(self):
+    def test_a_gap_at_the_very_start_is_not_filled(self):
+        # The hand genuinely was not there yet. Extending its first sighting
+        # backwards is what smeared one-frame ghost hands across whole clips.
         samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE, drop=(0.0,))
         filled = sequence.bridge_gaps(samples)
         shape = slice(hands.DOMINANT_OFFSET + 1,
                       hands.DOMINANT_OFFSET + hands.PER_HAND_FLOATS)
-        self.assertNotEqual(set(filled[0][shape]), {0.0})
-        self.assertEqual(filled[0][shape], filled[1][shape])
+        self.assertEqual(set(filled[0][shape]), {0.0})
+
+    def test_a_one_frame_ghost_hand_is_not_smeared_across_the_clip(self):
+        # 18 of the first 250 real clips had a second hand seen for 1-2
+        # frames, and the old bridging held it across every frame.
+        samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE)
+        ghost_at = len(samples) // 2
+        ghosted = []
+        for i, s in enumerate(samples):
+            if i == ghost_at:
+                features = hands.feature_vector(place(320, 300), place(150, 300), FACE)
+                ghosted.append(sequence.Sample(s.t, features, s.dom,
+                                               hands.anchor(place(150, 300))))
+            else:
+                ghosted.append(s)
+        filled = sequence.bridge_gaps(ghosted)
+        body = slice(hands.NONDOMINANT_OFFSET + 1,
+                     hands.NONDOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        present = [i for i, v in enumerate(filled) if any(v[body])]
+        self.assertEqual(present, [ghost_at])
+
+    def test_a_long_dropout_is_not_bridged(self):
+        # Past max_gap_ms the hand is treated as having genuinely left.
+        samples = clip(STRAIGHT_DOWN, 2000, 30.0, face=FACE,
+                       drop=tuple(i / 60 for i in range(15, 45)))
+        filled = sequence.bridge_gaps(samples)
+        shape = slice(hands.DOMINANT_OFFSET + 1,
+                      hands.DOMINANT_OFFSET + hands.PER_HAND_FLOATS)
+        middle = len(samples) // 2
+        self.assertEqual(samples[middle].features[hands.DOMINANT_OFFSET], 0.0)
+        self.assertEqual(set(filled[middle][shape]), {0.0})
 
     def test_a_clean_clip_is_untouched(self):
         samples = clip(STRAIGHT_DOWN, 800, 30.0, face=FACE)

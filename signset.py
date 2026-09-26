@@ -479,6 +479,39 @@ def clip_to_row(clip, mirrored_input=None):
     ] + sequence.sign_vector(samples)
 
 
+# ── training windows ───────────────────────────────────────────────────────
+def clip_windows(clip, length_ms=sequence.SIGN_WINDOW_MS, step_ms=300):
+    """Cut a clip into overlapping windows the length the live segmenter sees.
+
+    A clip is a whole take -- the hand coming up, the sign, the hand going
+    down -- a median of 2s on the first 250 clips. Live, the segmenter never
+    sees a whole take; it classifies a trailing 900ms window. Training on
+    takes and serving windows dropped a nearest-centroid floor from 83% to
+    67-72%; training on windows brought it back to 81%.
+
+    The windows keep the parent clip_id, so anything that groups by clip --
+    the in-sample split in train_signs.py -- keeps all of a take's windows
+    together instead of scoring near-duplicates against each other. A clip
+    shorter than one window comes back whole.
+    """
+    frames = clip.get("frames") or []
+    span = clip_span_ms(clip)
+    if not frames or span <= length_ms:
+        return [clip]
+
+    windows = []
+    start = 0
+    while start + length_ms <= span:
+        inside = [f for f in frames if start <= f["t"] < start + length_ms]
+        if inside:
+            t0 = inside[0]["t"]
+            window = dict(clip)
+            window["frames"] = [dict(f, t=f["t"] - t0) for f in inside]
+            windows.append(window)
+        start += step_ms
+    return windows or [clip]
+
+
 # ── the derived CSV ────────────────────────────────────────────────────────
 def read_header(path):
     with open(path, newline="") as fh:

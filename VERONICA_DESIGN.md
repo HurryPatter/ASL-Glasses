@@ -171,7 +171,11 @@ Collection writes **two** files:
 | File | What it is |
 | --- | --- |
 | `veronica_clips.jsonl` | raw landmarks, one clip per line — **the archive** |
-| `veronica_signs.csv` | the 371-float training rows — **derived, regenerable** |
+| `veronica_signs.csv` | the 371-float rows, one per whole clip — **derived, regenerable**, used by `inspect_signs.py` |
+
+`train_signs.py` reads the archive directly rather than the CSV, cutting each
+clip into live-length windows, so training always reflects the current feature
+code even if nobody has run `rebuild_signs.py`.
 
 Sequencing the feature layers before collection protected the signers' time
 exactly once; every later change to the representation would have invalidated
@@ -345,10 +349,36 @@ than side-of-frame is deliberate, because hands cross in ASL.
 self-occlusion cluster inside the gesture rather than spreading evenly. A
 keyframe near a dropout used to interpolate between a real hand and an all-zero
 block, producing a half-scale hand at an impossible position — a pose nobody
-made, blended out of a pose and an absence. `bridge_gaps()` now holds the last
+made, blended out of a pose and an absence. `bridge_gaps()` holds the last
 tracked geometry across the gap. The presence flags are deliberately *not*
 filled: they stay honest and come out fractional after resampling, which is
 exactly the signal a classifier should get.
+
+**The first version of that fix created its own bug.** It also extended a
+hand's first and last sighting out to the clip edges, so a second hand detected
+for a single frame — a face or background object read as a hand — had its
+geometry held across the *entire* clip. That happened in 18 of the first 250
+clips, nearly all MOTHER and FATHER, where the face is closest to the hand.
+Bridging now only fills a gap with a sighting on **both** sides, and only up to
+300 ms: a real dropout is bridged, a ghost is not.
+
+**The model was trained on something different from what it was shown live.**
+Training used whole takes — the hand coming up, the sign, the hand going down,
+a median of 2 s. The live segmenter classifies a trailing 900 ms window. On the
+first 250 clips that mismatch dropped a nearest-centroid floor from 83% to
+67–72%. `train_signs.py` now cuts every clip into overlapping 900 ms windows
+(~1,100 from 250 clips) straight from the archive, and together with the
+bridging fix the same live-style measurement reads **85.6%**. The window length
+lives in one place, `sequence.SIGN_WINDOW_MS`, and a test fails if the training
+windows and the live segmenter ever disagree about it again.
+
+**A lone hand could land in the wrong slot live.** Offline, a MediaPipe label
+flip is voted away over the whole clip; live there is no clip to vote over, so
+one flipped frame dropped the hand into the non-dominant slot. The demo now
+puts a single visible hand in the dominant slot, which is where one-handed ASL
+signs are made. This is deliberately *not* in `capture.scene()`, because
+`check_setup.py` uses that to test the handedness convention and the rule would
+make the test pass unconditionally.
 
 **Landmarks jitter.** A 3-point **median** rather than an average, and that
 choice is the whole reason it is safe: the median of three monotonically
@@ -379,6 +409,14 @@ Measured: the per-frame cost of **everything in this repository is 0.08 ms, or
 0.2% of the budget at 20 fps**. The cost is MediaPipe and camera I/O, so
 optimising the feature code would be pointless.
 
+`capture.open_camera()` prefers **DirectShow + MJPG** on Windows. OpenCV's
+default Windows backend is known to deliver frames slowly and to cap or jitter
+the frame rate on many webcams. It falls back to the default if DirectShow
+fails, and resolution stays pinned at 640×480 to match every collected clip —
+a different resolution would change tracking quality and reintroduce a
+train/live mismatch. `--default-backend` on any tool switches back, and
+`check_setup.py` reports which backend it got.
+
 `capture.PeriodicFace` runs the face detector every 3rd frame and reuses the
 box between — a whole second model saved on two frames in three. The tradeoff
 is that the box lags by up to `every` frames during a fast head turn, which
@@ -406,7 +444,7 @@ on the embedded target rather than a tuning preference.
 python -m unittest discover -p "test_*.py" -v
 ```
 
-332 offline tests, standard library only, running in CI on every push. No `pip
+341 offline tests, standard library only, running in CI on every push. No `pip
 install` step: the test modules import nothing outside the standard library, so
 the suite finishes in seconds.
 

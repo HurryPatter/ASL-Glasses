@@ -31,6 +31,41 @@ FACE_MODEL_URL = ("https://storage.googleapis.com/mediapipe-models/face_detector
                   "blaze_face_short_range/float16/latest/blaze_face_short_range.tflite")
 
 
+def open_camera(index=0, default_backend=False):
+    """Open the webcam, preferring DirectShow + MJPG on Windows.
+
+    OpenCV's default Windows backend (Media Foundation) is known to be slow to
+    deliver frames and to cap or jitter the frame rate on many webcams, and
+    Veronica needs every frame it can get -- motion signs stop being
+    assemblable below ~11fps. DirectShow with MJPG compression usually lets the
+    camera run at its full 30fps.
+
+    Resolution is pinned at 640x480, the same as every clip collected so far:
+    a different resolution changes how well MediaPipe tracks, which would be a
+    fresh train/live mismatch of exactly the kind this is trying to remove.
+
+    Falls back to the default backend if DirectShow cannot open the camera or
+    returns no frame, so this cannot make things worse than before. Pass
+    default_backend=True to compare the two -- `check_setup.py` reports which
+    one it got and the fps it measured.
+    """
+    import sys
+    import cv2
+
+    if sys.platform.startswith("win") and not default_backend:
+        cam = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if cam.isOpened():
+            cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+            cam.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            cam.set(cv2.CAP_PROP_FPS, 30)
+            ok, _ = cam.read()
+            if ok:
+                return cam
+        cam.release()
+    return cv2.VideoCapture(index)
+
+
 def build_landmarker(num_hands=2, model_path=HAND_MODEL):
     """num_hands=2 by default -- about half the ASL lexicon is two-handed, and
     `main.py`'s num_hands=1 is what stage 1 exists to move past."""

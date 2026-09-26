@@ -64,7 +64,7 @@ unchanged — the buffer already holds every frame either way.
 Standard library only.
 """
 from debouncer import Debouncer
-from sequence import SignBuffer
+from sequence import SIGN_WINDOW_MS, SignBuffer
 from signset import REST_LABEL
 
 
@@ -77,7 +77,7 @@ class ContinuousSegmenter:
     only way to test the *segmentation* separately from the model's accuracy.
     """
 
-    def __init__(self, classify, window_ms=900, stride_ms=100,
+    def __init__(self, classify, window_ms=SIGN_WINDOW_MS, stride_ms=100,
                  min_confidence=0.70, rest_label=REST_LABEL,
                  missing_tolerance_ms=300,
                  min_hold_ms=150, blank_ms=300, switch_ms=100,

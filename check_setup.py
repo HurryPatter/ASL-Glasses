@@ -115,9 +115,9 @@ def check_offline_tests():
 
 
 # ── camera ─────────────────────────────────────────────────────────────────
-def open_camera(index):
-    import cv2
-    cam = cv2.VideoCapture(index)
+def open_camera(index, default_backend=False):
+    import capture
+    cam = capture.open_camera(index, default_backend)
     if not cam.isOpened():
         record(FAIL, "Camera", f"could not open camera {index}",
                "Check it is connected and not in use by another application.\n"
@@ -129,7 +129,11 @@ def open_camera(index):
         record(FAIL, "Camera", "opened but returned no frame")
         return None
     height, width = frame.shape[:2]
-    record(PASS, "Camera", f"{width}x{height}")
+    try:
+        backend = cam.getBackendName()
+    except Exception:
+        backend = "unknown"
+    record(PASS, "Camera", f"{width}x{height} via {backend}")
     return cam
 
 
@@ -368,6 +372,9 @@ def main():
     parser.add_argument("--skip-hands", action="store_true",
                         help="skip the interactive handedness check")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--default-backend", action="store_true",
+                        help="use OpenCV's default camera backend, to compare "
+                             "its fps against DirectShow+MJPG")
     parser.add_argument("--seconds", type=float, default=4.0)
     parser.add_argument("--set-mirrored-input", choices=["true", "false"],
                         help="write the handedness convention to "
@@ -394,7 +401,7 @@ def main():
         print("\nCamera")
         print("-" * 60)
         import cv2
-        cam = open_camera(args.camera)
+        cam = open_camera(args.camera, args.default_backend)
         if cam is not None:
             landmarker, detector = build_detectors()
             try:

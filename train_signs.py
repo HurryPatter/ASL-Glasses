@@ -12,7 +12,7 @@ standard-library only and tested in CI. The sklearn call is the easy part to
 get right; choosing the folds is where a silent mistake produces a number that
 looks perfectly reasonable.
 
-Input:  veronica_signs.csv       -- metadata + 371 sign features per clip
+Input:  veronica_clips.jsonl     -- the raw clip archive, cut into windows
 Output: veronica_model.joblib    -- trained pipeline
         veronica_labels.json     -- label order (index i -> label)
 
@@ -32,7 +32,7 @@ import joblib
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit
 from sklearn.metrics import classification_report, confusion_matrix
 
 import folds
@@ -73,21 +73,38 @@ def build_model():
 
 
 def load():
-    df = pd.read_csv(DATA_PATH)
-    missing = [c for c in signset.HEADER if c not in df.columns]
-    if missing:
-        sys.exit(f"{DATA_PATH} is missing {len(missing)} expected column(s), "
-                 f"starting with {missing[:3]}. Re-derive it with "
-                 f"`python rebuild_signs.py`.")
+    """Training windows straight from the raw archive.
 
-    # Select features explicitly rather than dropping known metadata, so a new
-    # metadata column can never silently become a 372nd input -- and `person`
-    # in particular would let the model identify the signer instead of the
-    # sign, inflating exactly the number this script exists to measure.
-    X = df[sequence.SIGN_COLUMNS].values.astype("float32")
+    Built from veronica_clips.jsonl rather than veronica_signs.csv for two
+    reasons. The model has to see what the live segmenter sees -- 900ms
+    windows, not whole takes -- and windows can only be cut from the raw
+    landmarks. And reading the archive directly means training always reflects
+    the current feature code, so forgetting to run rebuild_signs.py after a
+    change can no longer train a model on stale rows.
+    """
+    try:
+        clips = list(signset.read_clips(signset.CLIPS_PATH))
+    except FileNotFoundError:
+        sys.exit(f"{signset.CLIPS_PATH} not found. Record some clips with "
+                 f"`python collect_signs.py` first.")
+    if not clips:
+        sys.exit(f"{signset.CLIPS_PATH} is empty.")
+
+    X, labels_per_row, people, clip_ids = [], [], [], []
+    for clip in clips:
+        for window in signset.clip_windows(clip):
+            X.append(sequence.sign_vector(signset.clip_to_samples(window)))
+            labels_per_row.append(clip["label"])
+            people.append(clip["person"])
+            clip_ids.append(clip["clip_id"])
+
+    df = pd.DataFrame({"label": labels_per_row, "person": people,
+                       "clip_id": clip_ids})
+    X = np.array(X, dtype="float32")
     labels = sorted(df["label"].unique())
     y = df["label"].map({l: i for i, l in enumerate(labels)}).values
-    people = df["person"].tolist()
+    print(f"{len(clips)} clips cut into {len(X)} training windows of "
+          f"{sequence.SIGN_WINDOW_MS}ms -- the span the live segmenter sees.")
     return df, X, y, people, labels
 
 
@@ -165,8 +182,8 @@ def main():
     quick = "--quick" in sys.argv
     df, X, y, people, labels = load()
 
-    print(f"Loaded {len(df)} clips, {len(labels)} labels, "
-          f"{df['person'].nunique()} people.")
+    print(f"{len(labels)} labels, {df['person'].nunique()} people. "
+          f"Windows per sign per person:")
     print(df.groupby(["person"])["label"].value_counts().unstack(fill_value=0)
           .T.to_string())
 
@@ -175,17 +192,21 @@ def main():
 
     # The shipped model trains on everything -- holding a person out is for
     # measurement, not for the artifact the live pipeline loads.
-    print(f"\n{'='*70}\nTRAINING SHIPPED MODEL ON ALL {len(X)} CLIPS\n{'='*70}")
+    print(f"\n{'='*70}\nTRAINING SHIPPED MODEL ON ALL {len(X)} WINDOWS\n{'='*70}")
     model = build_model()
     model.fit(X, y)
 
-    X_tr, X_val, y_tr, y_val = train_test_split(
-        X, y, test_size=0.15, stratify=y, random_state=42)
-    in_sample = (build_model().fit(X_tr, y_tr).predict(X_val) == y_val).mean()
-    print(f"In-sample (random split) accuracy: {in_sample:.3f}  <- INFLATED, "
-          f"do not quote:\n  clips of one sign by one person in one sitting are "
-          f"far more like each other\n  than like anyone else's, so this mostly "
-          f"measures memorisation.")
+    # Split by clip, never by window: overlapping windows of one take are
+    # near-duplicates, and letting them straddle the split would measure
+    # memorisation. Still one person in one sitting, so still not quotable.
+    splitter = GroupShuffleSplit(n_splits=1, test_size=0.15, random_state=42)
+    train_idx, val_idx = next(splitter.split(X, y, groups=df["clip_id"]))
+    held = build_model().fit(X[train_idx], y[train_idx])
+    in_sample = (held.predict(X[val_idx]) == y[val_idx]).mean()
+    print(f"Held-out-clip accuracy (same signer): {in_sample:.3f}  <- NOT a "
+          f"cross-person\n  number. Whole takes are held out, so it is not "
+          f"memorising windows, but one\n  person in one sitting still "
+          f"measures these recordings, not the language.")
 
     joblib.dump(model, MODEL_OUT)
     with open(LABELS_OUT, "w") as f:

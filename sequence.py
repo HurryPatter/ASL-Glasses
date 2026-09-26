@@ -90,6 +90,17 @@ MAX_SPEED = 20.0
 MAX_REVERSALS = 8.0
 MAX_DURATION_S = 3.0
 
+# How long one sign's window is -- the span the live segmenter classifies,
+# and therefore the span training windows are cut to. Kept in one place
+# because a mismatch between the two cost ~12 points: training on whole takes
+# (median 2s) and classifying 900ms live windows dropped a nearest-centroid
+# floor from 83% to 67-72% on the first 250 clips.
+SIGN_WINDOW_MS = 900
+
+# A dropout longer than this is not bridged -- the hand is treated as having
+# genuinely left, rather than its last pose being held indefinitely.
+MAX_BRIDGE_MS = 300
+
 # Ignore wander below this before calling it a change of direction. Same role
 # as MotionDetector.deadband, and the same reason: a hand held still still
 # drifts, and every drift has a direction.
@@ -112,46 +123,36 @@ def _median(values):
 
 
 # ── tracking gaps ──────────────────────────────────────────────────────────
-def bridge_gaps(samples):
-    """Feature vectors with each block's geometry held across frames where it
-    was not tracked.
+def bridge_gaps(samples, max_gap_ms=MAX_BRIDGE_MS):
+    """Feature vectors with short tracking dropouts filled in.
 
-    MediaPipe drops hands. It does so most on exactly the frames a sign needs
-    most -- fast movement blurs the image, and a hand that turns or crosses the
-    other one occludes itself -- so dropouts are not uniformly distributed
-    noise, they cluster inside the gesture.
+    MediaPipe drops hands most on the frames a sign needs most -- fast movement
+    blurs the image, and a turning hand occludes itself -- so dropouts cluster
+    inside the gesture. Without this, a keyframe landing in a dropout
+    interpolates between a real hand and an all-zero block, producing a
+    half-scale hand at an impossible position.
 
-    Without this, a keyframe landing near a gap interpolates between a real
-    hand and an all-zero block, producing a half-scale hand at some impossible
-    position: a pose nobody made, blended out of a pose and an absence. Holding
-    the last tracked geometry instead means the vector says "the hand was here,
-    and we stopped seeing it" rather than "the hand shrank toward the origin".
+    Only a gap with a sighting on **both** sides is bridged, and only if it is
+    shorter than `max_gap_ms`. That is what separates a dropout from a ghost.
+    An earlier version also extended a hand's first and last sighting out to
+    the clip edges, which meant a second hand detected for a single frame --
+    a face or a background object read as a hand -- had its geometry held
+    across the entire clip. That happened in 18 of the first 250 collected
+    clips, nearly all MOTHER and FATHER, where the face is closest to the hand.
 
-    The presence flags themselves are **not** filled. They keep telling the
-    truth, and after resampling they come out fractional across a gap, which is
-    exactly the signal a classifier should get: this stretch was interpolated,
-    trust it less.
+    The presence flags are never filled. They keep telling the truth, and after
+    resampling they come out fractional across a bridged gap, which is the
+    signal that a stretch was interpolated.
     """
     vectors = [list(s.features) for s in samples]
+    times = [s.t for s in samples]
     for start, length, flag in hands.BLOCKS:
         body = slice(start + 1, start + length)
-
-        last = None
-        for vector in vectors:
-            if vector[flag]:
-                last = vector[body]
-            elif last is not None:
-                vector[body] = last
-
-        # Frames before the first sighting have nothing behind them to hold,
-        # so they take the first geometry that does arrive.
-        following = None
-        for vector in reversed(vectors):
-            if vector[flag]:
-                following = vector[body]
-            elif following is not None and not any(vector[body]):
-                vector[body] = following
-
+        seen = [i for i, v in enumerate(vectors) if v[flag]]
+        for before, after in zip(seen, seen[1:]):
+            if after - before > 1 and times[after] - times[before] <= max_gap_ms:
+                for i in range(before + 1, after):
+                    vectors[i][body] = vectors[before][body]
     return vectors
 
 

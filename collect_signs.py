@@ -203,6 +203,9 @@ def main():
     parser.add_argument("--no-face", action="store_true",
                         help="collect without location features (rarely what you want)")
     parser.add_argument("--camera", type=int, default=0)
+    parser.add_argument("--default-backend", action="store_true",
+                        help="use OpenCV's default camera backend instead of "
+                             "DirectShow+MJPG on Windows (for comparing fps)")
     parser.add_argument("--face-every", type=int, default=3,
                         help="run the face detector every Nth frame (1 = every "
                              "frame)")
@@ -231,7 +234,7 @@ def main():
     face_detector = capture.build_face_detector() if use_face else None
     faces = capture.PeriodicFace(face_detector, every=args.face_every)
 
-    cap = cv2.VideoCapture(args.camera)
+    cap = capture.open_camera(args.camera, args.default_backend)
     if not cap.isOpened():
         sys.exit(f"Could not open camera {args.camera}.")
 
