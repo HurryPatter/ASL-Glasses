@@ -333,15 +333,23 @@ orientation override, no retraining needed — and deliberately **not**
 implemented: it is not worth the added runtime complexity on one miss. Revisit
 only if G→Q recurs across more runs.
 
-### `audio.py` interpolates text into a PowerShell command unescaped
+### FIXED: `audio.py` was Windows-only and spliced text into a command
 
-```python
-f'$s.Speak("{text}")'
-```
+It shelled out to PowerShell with `f'$s.Speak("{text}")'`. That could not run on
+the Pi at all, an apostrophe (ordinary spell-corrector output: "I'm") broke
+speech mid-sentence, and a quote or semicolon could run arbitrary PowerShell.
 
-A corrected string containing a quote, `;` or `$` can break or inject into the
-shell command. Note that the NLP layer can legitimately produce apostrophes, so
-this is reachable in normal use, not just adversarially. Not yet fixed.
+It now auto-detects a backend — Windows' System.Speech, espeak-ng, Piper, macOS
+`say`, or printing when nothing is installed — and passes text only as data:
+through stdin, or for Windows an environment variable read by a constant script.
+No backend uses a shell. `test_audio.py` asserts the spoken text never appears
+in any command line, using a deliberately hostile string.
+
+espeak-ng was verified end to end here (real speech rendered from the exact
+flags the class builds). **Piper was not**: its CLI was confirmed from
+`piper-tts` 1.8.0's own help, but the voice download is blocked in the
+development sandbox, so synthesis and latency are unmeasured until it runs on
+the Pi.
 
 ### Hardware target still undecided
 

@@ -203,33 +203,56 @@ The largest cross-person confusions are **K↔P** (415/410) and **S↔N** (345/2
 
 ## Running on a Raspberry Pi
 
-Setup and the first measurement, in order. **Raspberry Pi OS must be 64-bit** —
-the MediaPipe wheels are arm64 only.
+Use the `pi5` branch. **Raspberry Pi OS must be 64-bit** — the MediaPipe wheels
+are arm64 only, and on 32-bit `pip` fails with an error that never says so.
 
 ```bash
-sudo apt update && sudo apt full-upgrade -y
-sudo apt install -y python3-venv git libgl1 libglib2.0-0 libegl1 libgles2
-
-git clone https://github.com/HurryPatter/ASL-Glasses.git
+git clone -b pi5 https://github.com/HurryPatter/ASL-Glasses.git
 cd ASL-Glasses
+bash setup_pi.sh            # add --piper for the natural-sounding voice
+source .venv/bin/activate   # every new terminal
 
-python3 -m venv .venv            # required: Pi OS Bookworm refuses system-wide pip
-source .venv/bin/activate
-pip install -r requirements.txt
-
-python bench_pi.py --seconds 120          # the number that decides the board
-python bench_pi.py --width 320 --height 240 --seconds 120
+speaker-test -t wav -c 2 -l 1          # hear anything at all?
+python audio.py "hello"                # speech works?
+python bench_pi.py --seconds 120       # THE number: frames per second
 ```
 
-`libegl1`/`libgles2` are needed by MediaPipe 1.0's native library even with no
-display attached; the Desktop image has them, a Lite image may not, and the
-failure (`OSError: libEGL.so.1: cannot open shared object file`) is not obvious.
+`setup_pi.sh` checks the architecture, installs the system packages, builds the
+venv (Pi OS refuses system-wide `pip`), installs the pinned requirements, and
+finishes by confirming the model loads with no version warning and naming the
+speech backend it found. Safe to re-run.
+
+Three system packages are easy to miss and are included: **`libegl1`/`libgles2`**
+(MediaPipe 1.0's native library needs libEGL even with no display — a Lite image
+may lack it, and `OSError: libEGL.so.1` does not say what to install),
+**`espeak-ng`** (speech), and **`alsa-utils`** (`aplay` and `speaker-test`).
 
 **`requirements.txt` pins exact versions, deliberately.** The model is a pickle
 and scikit-learn only guarantees one loads correctly under the version that
 wrote it, so the model and the pins are a matched pair: change them together
 with a retrain, never separately. The pinned set is verified to resolve on the
 Pi 5 under both Python 3.11 (Bookworm) and 3.13 (Trixie).
+
+### Speech
+
+`audio.py` picks a backend automatically: Windows' built-in voice on the
+laptops, `espeak-ng` on the Pi, and **Piper** (neural, far more natural — worth it
+for the defense) if you ran `setup_pi.sh --piper` and set
+
+```bash
+export ASL_PIPER_MODEL=$HOME/ASL-Glasses/voices/en_US-lessac-medium.onnx
+```
+
+Force a backend with `ASL_TTS=espeak|piper|sapi|say|print`. With no TTS
+installed it prints the text rather than crashing, so losing speech never takes
+recognition down with it. Text is passed as data (stdin or an environment
+variable), never spliced into a command, so apostrophes and quotes are safe.
+
+The Pi 5 has **no 3.5mm jack**. Use a USB audio adapter, then make it the
+default output: `aplay -l` lists devices, and on the desktop, right-click the
+speaker icon on the taskbar to choose it.
+
+### Benchmark first
 
 `bench_pi.py` runs the hand landmarker with no GUI and no classifier, printing
 fps every 10s along with core temperature. Run it for minutes, not seconds: a
@@ -241,20 +264,14 @@ Pi throttles as it heats, and the sustained figure is the one that matters.
 | 12-25 | static letters and word signs; J/Z unreliable |
 | < 12 | static letters degrade as well, badly at low resolution |
 
-**Known blockers on Linux, both expected:**
+### Camera and display
 
-- `audio.py` shells out to Windows PowerShell and will not run. Replace with
-  `espeak-ng` (tiny, robotic) or `piper` (neural, much better for a demo).
-  Porting it also removes the unescaped-interpolation bug in that file.
-- A **CSI ribbon camera** is not visible to `cv2.VideoCapture` on Bookworm,
-  which uses libcamera; that needs `picamera2`. A **USB webcam** works with the
-  existing code unchanged, so start there.
-- The Pi 5 has no 3.5mm jack (the PCIe slot took its place). Use a USB audio
-  adapter or an I2S DAC.
+A **USB webcam** works with the existing code unchanged. A **CSI ribbon camera**
+does not: Pi OS exposes it through libcamera, which `cv2.VideoCapture` cannot
+see, so it would need `picamera2`. Start with USB.
 
-`main.py`, `collect_data.py` and `evaluate.py` all open a preview window, so
-they need a desktop session or VNC. `bench_pi.py` does not, which is why it is
-the first thing to run.
+`main.py`, `collect_data.py` and `evaluate.py` open a preview window, so they
+need the desktop or VNC. `bench_pi.py` and `audio.py` do not.
 
 ## Choosing the embedded target
 
@@ -326,10 +343,13 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `motion.py` | J/Z trajectory detection (needs ~15fps, see `NOTES.md`) |
 | `debouncer.py` | One commit per letter run (wall-clock timed) |
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
-| `audio.py` | Windows TTS output |
+| `audio.py` | Text-to-speech: Windows voice, espeak-ng or Piper, auto-detected |
+| `setup_pi.sh` | One-command Raspberry Pi setup |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `test_dataset.py` | Offline schema/grouping tests |
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
+| `test_audio.py` | Offline speech tests (no speaker needed) |
+| `test_nlp_bridge.py` | Spell-correction tests |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |

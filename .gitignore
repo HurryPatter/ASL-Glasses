@@ -6,6 +6,9 @@ __pycache__/
 venv/
 env/
 
+# Piper voice models: ~60MB each, downloaded by setup_pi.sh --piper
+voices/
+
 # Backup written by backfill_person.py
 *.csv.bak
 
