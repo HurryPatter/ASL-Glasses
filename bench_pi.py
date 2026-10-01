@@ -24,6 +24,8 @@ import argparse
 import time
 
 import cv2
+
+import camera
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
@@ -48,12 +50,10 @@ def main():
     p.add_argument("--camera", type=int, default=0)
     args = p.parse_args()
 
-    cap = cv2.VideoCapture(args.camera)
+    source = camera.detect_source()
+    cap = camera.open_camera(args.width, args.height, index=args.camera)
     if not cap.isOpened():
-        raise SystemExit(f"could not open camera {args.camera}")
-    if args.width and args.height:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        raise SystemExit(f"could not open {source} camera {args.camera}")
     w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -68,7 +68,10 @@ def main():
         )
     )
 
-    print(f"camera {w}x{h}, running {args.seconds:.0f}s. Hold a hand in view.")
+    print(f"{source} camera {w}x{h}, running {args.seconds:.0f}s. Hold a hand in view.")
+    if source == "csi":
+        print("  (the ribbon camera is fixed at 30fps, so ~30fps here means the "
+              "Pi keeps up with it)")
     t0 = time.monotonic()
     frames = 0
     detections = 0

@@ -212,6 +212,7 @@ cd ASL-Glasses
 bash setup_pi.sh            # add --piper for the natural-sounding voice
 source .venv/bin/activate   # every new terminal
 
+python camera.py                       # camera gives a picture?
 speaker-test -t wav -c 2 -l 1          # hear anything at all?
 python audio.py "hello"                # speech works?
 python bench_pi.py --seconds 120       # THE number: frames per second
@@ -264,14 +265,37 @@ Pi throttles as it heats, and the sustained figure is the one that matters.
 | 12-25 | static letters and word signs; J/Z unreliable |
 | < 12 | static letters degrade as well, badly at low resolution |
 
-### Camera and display
+### Camera
 
-A **USB webcam** works with the existing code unchanged. A **CSI ribbon camera**
-does not: Pi OS exposes it through libcamera, which `cv2.VideoCapture` cannot
-see, so it would need `picamera2`. Start with USB.
+Both kinds work, through `camera.py`. A **ribbon (CSI) camera** is used if one
+is attached, otherwise a **USB webcam**; force either with `ASL_CAMERA=csi` or
+`ASL_CAMERA=usb`. Check with `python camera.py`.
+
+A ribbon camera cannot go through `cv2.VideoCapture`: Pi OS drives it with
+libcamera, and on a Pi 5 `/dev/video0` is the raw sensor front end. It goes
+through Picamera2 instead, fixed at 30fps so the camera cannot slow itself
+down in dim light and starve the J/Z detector. Picamera2 is only distributed
+through apt, which is why `setup_pi.sh` builds the venv with
+`--system-site-packages`; the pinned packages still install into the venv and
+take precedence.
+
+**The Pi 5's camera sockets are 22-pin, smaller than older Pis' 15-pin.** A
+standard Camera Module needs a **22-to-15-pin adapter cable**. Connect it only
+with the Pi powered off.
+
+### Network
+
+Raspberry Pi Imager can only set up Wi-Fi that takes a network name and a
+password. **Campus networks that ask for a username as well (WPA2-Enterprise)
+cannot be set in Imager** — the Pi never connects. Set it up on a phone hotspot
+(or Ethernet), then add the campus network from the Pi's desktop Wi-Fi menu,
+which does support it.
+
+### Display
 
 `main.py`, `collect_data.py` and `evaluate.py` open a preview window, so they
-need the desktop or VNC. `bench_pi.py` and `audio.py` do not.
+need the desktop: a monitor, or Screen Sharing in Raspberry Pi Connect.
+`bench_pi.py`, `audio.py` and `camera.py` do not.
 
 ## Choosing the embedded target
 
@@ -345,10 +369,12 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Text-to-speech: Windows voice, espeak-ng or Piper, auto-detected |
 | `setup_pi.sh` | One-command Raspberry Pi setup |
+| `camera.py` | Opens a ribbon camera or USB webcam behind one interface |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `test_dataset.py` | Offline schema/grouping tests |
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `test_audio.py` | Offline speech tests (no speaker needed) |
+| `test_camera.py` | Offline camera-selection tests (no camera needed) |
 | `test_nlp_bridge.py` | Spell-correction tests |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |

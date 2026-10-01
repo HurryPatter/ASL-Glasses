@@ -32,6 +32,7 @@ from mediapipe.tasks.python import vision as mp_vision
 
 import argparse
 
+import camera
 import hwprofile
 from debouncer import Debouncer
 from motion import MotionDetector
@@ -187,10 +188,8 @@ def main():
         )
     )
 
-    cap = cv2.VideoCapture(0)
-    if args.width and args.height:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+    # Ribbon camera if attached, else USB webcam; see camera.py.
+    cap = camera.open_camera(args.width, args.height)
     # Cameras snap to the nearest mode they support, so record what was
     # actually delivered rather than what was requested.
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))

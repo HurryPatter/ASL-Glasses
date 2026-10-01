@@ -13,6 +13,7 @@ from debouncer import Debouncer
 from nlp_bridge import NLPBridge
 from audio import AudioOutput
 from motion import MotionDetector
+import camera
 
 # ── Constants ──────────────────────────────────────────────────────────────
 LANDMARKER_PATH = "hand_landmarker.task"
@@ -78,7 +79,7 @@ def smoothed_display_letter():
 
 
 # ── Camera loop ────────────────────────────────────────────────────────────
-cap = cv2.VideoCapture(0)
+cap = camera.open_camera()   # ribbon camera if attached, else USB webcam
 start_time = time.monotonic()
 frame_no = 0
 consecutive_missed = 0

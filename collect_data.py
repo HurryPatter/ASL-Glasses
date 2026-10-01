@@ -42,6 +42,7 @@ import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
+import camera
 import dataset
 
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -138,7 +139,7 @@ def main():
     )
     landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
-    cap = cv2.VideoCapture(0)
+    cap = camera.open_camera()   # ribbon camera if attached, else USB webcam
     frame_timestamp_ms = 0
 
     csv_file, writer = open_output(person)
