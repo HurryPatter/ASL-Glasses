@@ -215,7 +215,7 @@ source .venv/bin/activate   # every new terminal
 python camera.py                       # camera gives a picture?
 speaker-test -t wav -c 2 -l 1          # hear anything at all?
 python audio.py "hello"                # speech works?
-python bench_pi.py --seconds 120       # THE number: frames per second
+python bench_pi.py --seconds 120       # THE number: fps and ms per frame
 ```
 
 `setup_pi.sh` checks the architecture, installs the system packages, builds the
@@ -258,6 +258,13 @@ speaker icon on the taskbar to choose it.
 `bench_pi.py` runs the hand landmarker with no GUI and no classifier, printing
 fps every 10s along with core temperature. Run it for minutes, not seconds: a
 Pi throttles as it heats, and the sustained figure is the one that matters.
+**Keep a hand in view**: with no hand MediaPipe skips the landmark model, so an
+empty run measures the cheaper path (the script warns when that happens).
+
+It also prints the per-frame processing time (median and 95th percentile),
+split by hand / no hand. The ribbon camera stops at 30fps, so on a Pi 5 fps
+reads ~30 whatever the headroom; the processing time is what shows how far
+below the camera's 33 ms frame interval the board actually is.
 
 | Measured fps | What works |
 | --- | --- |

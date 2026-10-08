@@ -16,11 +16,21 @@ Targets, from the emulation measurements on the laptop:
 Run it for at least a few minutes: a Pi throttles when it heats up, and the
 number that matters is the sustained one, not the first ten seconds.
 
+Keep a hand in view for most of the run. With no hand, MediaPipe runs only
+the palm detector; with one, it runs the landmark model too, and the
+classifier would follow -- so a run with no hand measures the wrong path.
+
+fps alone cannot show headroom when the camera is the limit (the ribbon
+camera stops at 30), so the per-frame processing time is reported as well:
+the time from a frame arriving to its landmarks coming back. That number,
+not fps, is how far the board is from its ceiling.
+
     python bench_pi.py                       # native resolution, 60s
     python bench_pi.py --width 320 --height 240
     python bench_pi.py --seconds 600         # thermal soak
 """
 import argparse
+import statistics
 import time
 
 import cv2
@@ -40,6 +50,15 @@ def cpu_temp_c():
             return int(fh.read().strip()) / 1000.0
     except Exception:
         return None
+
+
+def latency_summary(ms):
+    """(median, 95th percentile) of a list of per-frame times, or None."""
+    if not ms:
+        return None
+    ordered = sorted(ms)
+    p95 = ordered[min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))]
+    return statistics.median(ordered), p95
 
 
 def main():
@@ -75,6 +94,7 @@ def main():
     t0 = time.monotonic()
     frames = 0
     detections = 0
+    hand_ms, empty_ms = [], []
     window_start = t0
     window_frames = 0
 
@@ -83,20 +103,26 @@ def main():
         if not ok:
             break
         ts = int((time.monotonic() - t0) * 1000)
+        start = time.perf_counter()
         image = mp.Image(image_format=mp.ImageFormat.SRGB,
                          data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         result = landmarker.detect_for_video(image, ts)
+        spent_ms = (time.perf_counter() - start) * 1000
         frames += 1
         window_frames += 1
         if result.hand_landmarks:
             detections += 1
+            hand_ms.append(spent_ms)
+        else:
+            empty_ms.append(spent_ms)
 
         now = time.monotonic()
         if now - window_start >= 10.0:
             fps = window_frames / (now - window_start)
             temp = cpu_temp_c()
             temp_s = f", {temp:.0f}C" if temp is not None else ""
-            print(f"  t+{now-t0:5.0f}s  {fps:5.1f} fps{temp_s}")
+            print(f"  t+{now-t0:5.0f}s  {fps:5.1f} fps{temp_s}, "
+                  f"hand {detections / frames:4.0%}")
             window_start, window_frames = now, 0
 
     elapsed = time.monotonic() - t0
@@ -104,8 +130,18 @@ def main():
     cap.release()
 
     fps = frames / elapsed if elapsed else 0.0
+    found = detections / frames if frames else 0.0
     print(f"\n{w}x{h}: {fps:.1f} fps average over {elapsed:.0f}s "
-          f"({frames} frames, hand found in {detections})")
+          f"({frames} frames, hand found in {detections} = {found:.0%})")
+    for name, ms in (("hand in view", hand_ms), ("no hand", empty_ms)):
+        summary = latency_summary(ms)
+        if summary:
+            median, p95 = summary
+            print(f"  processing, {name:12s}: median {median:5.1f} ms, "
+                  f"p95 {p95:5.1f} ms  (ceiling ~{1000 / median:.0f} fps)")
+    if found < 0.5:
+        print("  WARNING: a hand was in view for under half the run, so this")
+        print("  mostly measures the no-hand path. Re-run holding a hand up.")
     if fps >= 25:
         print("  >= 25fps: motion signs (J/Z) should work. Full alphabet viable.")
     elif fps >= 12:
