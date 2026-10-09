@@ -41,7 +41,13 @@ def make_fake_cv2():
     return cv2
 
 
-def make_fake_picamera2(cameras, channels=3, fail_capture=False):
+# Camera Module 3 (imx708) lists autofocus; earlier modules do not.
+CM3_CONTROLS = {"AfMode": (0, 2, 0), "ExposureValue": (-8.0, 8.0, 0.0),
+                "AnalogueGain": (1.12, 16.0, None)}
+
+
+def make_fake_picamera2(cameras, channels=3, fail_capture=False,
+                        camera_controls=None, metadata=None):
     mod = types.ModuleType("picamera2")
 
     class Picamera2:
@@ -49,6 +55,7 @@ def make_fake_picamera2(cameras, channels=3, fail_capture=False):
 
         def __init__(self, index=0):
             self.index = index
+            self.camera_controls = dict(camera_controls or {})
             self.config = None
             self.started = self.stopped = self.closed = False
             Picamera2.instances.append(self)
@@ -71,6 +78,9 @@ def make_fake_picamera2(cameras, channels=3, fail_capture=False):
             w, h = self.config["main"]["size"]
             return FakeArray((h, w, channels))
 
+        def capture_metadata(self):
+            return dict(metadata or {})
+
     mod.Picamera2 = Picamera2
     return mod
 
@@ -79,7 +89,8 @@ class CameraTest(unittest.TestCase):
 
     def load(self, cameras=None, picamera2_installed=True, **fake):
         """Import camera.py with the stand-ins in place."""
-        modules = {"cv2": make_fake_cv2()}
+        # libcamera absent: camera.py falls back to the plain enum value.
+        modules = {"cv2": make_fake_cv2(), "libcamera": None}
         if picamera2_installed:
             modules["picamera2"] = make_fake_picamera2(cameras or [], **fake)
         else:
@@ -92,6 +103,7 @@ class CameraTest(unittest.TestCase):
         env = mock.patch.dict(os.environ, {}, clear=False)
         env.start(); self.addCleanup(env.stop)
         os.environ.pop("ASL_CAMERA", None)
+        os.environ.pop("ASL_CAMERA_EV", None)
         cam = importlib.import_module("camera")
         return cam, modules["cv2"], modules.get("picamera2")
 
@@ -202,3 +214,58 @@ class TestRibbonCamera(CameraTest):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestLowLight(CameraTest):
+
+    def open(self, env=None, **fake):
+        cam, _, _ = self.load(cameras=[{"Model": "imx708"}], **fake)
+        os.environ.update(env or {})
+        return cam, cam.open_camera()
+
+    def test_autofocus_runs_continuously_when_the_camera_has_it(self):
+        _, cap = self.open(camera_controls=CM3_CONTROLS)
+        self.assertEqual(cap.controls["AfMode"], 2)
+
+    def test_fixed_focus_camera_is_not_sent_autofocus(self):
+        # Asking a camera for a control it lacks is an error in libcamera.
+        _, cap = self.open(camera_controls={})
+        self.assertNotIn("AfMode", cap.controls)
+
+    def test_ev_is_off_unless_asked_for(self):
+        _, cap = self.open(camera_controls=CM3_CONTROLS)
+        self.assertNotIn("ExposureValue", cap.controls)
+
+    def test_ev_is_applied_and_clamped(self):
+        _, cap = self.open({"ASL_CAMERA_EV": "1.5"}, camera_controls=CM3_CONTROLS)
+        self.assertEqual(cap.controls["ExposureValue"], 1.5)
+        _, cap = self.open({"ASL_CAMERA_EV": "20"}, camera_controls=CM3_CONTROLS)
+        self.assertEqual(cap.controls["ExposureValue"], 8.0)
+
+    def test_bad_ev_is_ignored(self):
+        _, cap = self.open({"ASL_CAMERA_EV": "bright"}, camera_controls=CM3_CONTROLS)
+        self.assertNotIn("ExposureValue", cap.controls)
+
+    def test_frame_rate_stays_pinned_whatever_else_is_set(self):
+        _, cap = self.open({"ASL_CAMERA_EV": "1"}, camera_controls=CM3_CONTROLS)
+        self.assertEqual(cap.controls["FrameDurationLimits"], (33333, 33333))
+
+    def test_report_flags_exposure_at_the_frame_cap(self):
+        cam, cap = self.open(camera_controls=CM3_CONTROLS,
+                             metadata={"ExposureTime": 33000, "AnalogueGain": 9.5,
+                                       "Lux": 40})
+        text = " ".join(cam.exposure_report(cap.metadata(), cap.frame_us,
+                                            cap.gain_range))
+        self.assertIn("LIGHT-LIMITED", text)
+        self.assertIn("16x", text)
+
+    def test_report_says_when_there_is_headroom(self):
+        cam, cap = self.open(metadata={"ExposureTime": 8000, "AnalogueGain": 1.2})
+        text = " ".join(cam.exposure_report(cap.metadata(), cap.frame_us))
+        self.assertNotIn("LIGHT-LIMITED", text)
+        self.assertIn("headroom", text)
+
+    def test_report_without_metadata(self):
+        cam, cap = self.open()
+        self.assertEqual(cam.exposure_report({}, cap.frame_us),
+                         ["no exposure metadata from the camera"])

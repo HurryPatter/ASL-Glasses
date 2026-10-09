@@ -293,6 +293,15 @@ through apt, which is why `setup_pi.sh` builds the venv with
 `--system-site-packages`; the pinned packages still install into the venv and
 take precedence.
 
+**Dim rooms look dark on the ribbon camera, by design.** At a fixed 30fps no
+exposure can be longer than 33ms, so where a webcam would drop to 15fps and
+look bright, the ribbon camera raises gain instead (darker, noisier, but J/Z
+keep working). `python camera.py` saves `camera_check.jpg` and says whether
+the camera has hit that limit (`LIGHT-LIMITED`). If it has, put light on the
+hand; `ASL_CAMERA_EV=1 python main.py` (or `2`) brightens further using gain.
+Camera Module 3's autofocus is set to continuous so a hand at arm's length
+stays sharp.
+
 **The Pi 5's camera sockets are 22-pin, smaller than older Pis' 15-pin.** A
 standard Camera Module needs a **22-to-15-pin adapter cable**. Connect it only
 with the Pi powered off.

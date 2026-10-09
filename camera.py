@@ -18,12 +18,58 @@ Which camera, in order:
 Frames are always BGR, as OpenCV and the rest of the pipeline expect.
 Picamera2's "RGB888" format is, despite the name, stored B,G,R -- which is
 why it is the format asked for below.
+
+Low light. The ribbon camera's frame rate is pinned at 30fps (see PiCamera),
+which caps each exposure at 33ms: in a dim room the camera cannot brighten
+the image by exposing longer, as a webcam does by quietly dropping to 15fps.
+It raises sensor gain instead, which is noisier but keeps J and Z working.
+`python camera.py` reports whether that limit has been reached. If it has,
+the fix is light on the hand; ASL_CAMERA_EV=1 (or 2) asks the camera for a
+brighter image at the cost of more noise, and works only while there is gain
+left to give.
 """
 import os
+import sys
 
 import cv2
 
 DEFAULT_SIZE = (640, 480)   # 4:3, matching the webcams the training data used
+
+
+def requested_ev(env=None):
+    """ASL_CAMERA_EV as a float, or None if unset or not a number."""
+    env = os.environ if env is None else env
+    try:
+        return float(env["ASL_CAMERA_EV"])
+    except (KeyError, ValueError):
+        return None
+
+
+def exposure_report(meta, frame_us, gain_range=None):
+    """Plain-language verdict on brightness from Picamera2 frame metadata.
+
+    The question that matters is whether a dark image is the camera's choice
+    or its limit: an exposure at the frame-time cap means it is already
+    collecting all the light 30fps allows.
+    """
+    exp = meta.get("ExposureTime")
+    gain = meta.get("AnalogueGain")
+    if exp is None or gain is None:
+        return ["no exposure metadata from the camera"]
+    lines = [f"exposure {exp / 1000:.1f} ms of {frame_us / 1000:.1f} ms per frame, "
+             f"gain {gain:.1f}x" + (f" (sensor max {gain_range[1]:.0f}x)"
+                                   if gain_range else "")]
+    if "Lux" in meta:
+        lines.append(f"scene brightness ~{meta['Lux']:.0f} lux "
+                     f"(an evening room ~50, an office ~300-500)")
+    if exp >= 0.9 * frame_us:
+        lines.append("LIGHT-LIMITED: exposure is at the 30fps cap, so brightness "
+                     "now costs noise. Add light on the hand (lamp, window); "
+                     "ASL_CAMERA_EV=1 brightens further using gain.")
+    else:
+        lines.append("exposure has headroom: the camera is choosing this "
+                     "brightness, so the scene is lit well enough.")
+    return lines
 
 
 def csi_cameras():
@@ -60,6 +106,14 @@ def open_camera(width=None, height=None, fps=30, index=0, source=None):
     return cap
 
 
+def _af_continuous():
+    try:
+        from libcamera import controls
+        return controls.AfModeEnum.Continuous
+    except Exception:
+        return 2   # libcamera's value for Continuous
+
+
 class PiCamera:
     """A Picamera2 camera behind the cv2.VideoCapture interface."""
 
@@ -72,10 +126,23 @@ class PiCamera:
         # Fixing the frame duration pins the frame rate, so the camera does
         # not quietly slow down in dim light and starve the motion detector,
         # which needs a steady ~30fps for J and Z.
-        frame_us = int(1_000_000 / fps)
+        self.frame_us = frame_us = int(1_000_000 / fps)
+        controls = {"FrameDurationLimits": (frame_us, frame_us)}
+        available = getattr(self._cam, "camera_controls", {}) or {}
+        # Camera Module 3 has autofocus but starts at a fixed lens position;
+        # a hand at arm's length can sit outside it. Earlier modules are
+        # fixed-focus and do not list the control.
+        if "AfMode" in available:
+            controls["AfMode"] = _af_continuous()
+        ev = requested_ev()
+        if ev is not None and "ExposureValue" in available:
+            lo, hi = available["ExposureValue"][:2]
+            controls["ExposureValue"] = max(lo, min(hi, ev))
+        self.controls = controls
+        self.gain_range = available.get("AnalogueGain")
         config = self._cam.create_video_configuration(
             main={"size": (self.width, self.height), "format": "RGB888"},
-            controls={"FrameDurationLimits": (frame_us, frame_us)},
+            controls=controls,
         )
         self._cam.configure(config)
         self._cam.start()
@@ -94,6 +161,10 @@ class PiCamera:
         if frame.ndim == 3 and frame.shape[2] == 4:   # some formats carry padding
             frame = frame[:, :, :3]
         return True, frame
+
+    def metadata(self):
+        """Exposure, gain, light level etc. for the latest frame."""
+        return self._cam.capture_metadata()
 
     def get(self, prop):
         if prop == cv2.CAP_PROP_FRAME_WIDTH:
@@ -121,12 +192,28 @@ class PiCamera:
 
 if __name__ == "__main__":
     # Quick check on the Pi:  python camera.py
+    # Saves camera_check.jpg (open it, or copy it off with scp) and, for a
+    # ribbon camera, says whether a dark picture is the room or the camera.
     src = detect_source()
     print(f"camera source: {src}")
     if src == "csi":
         for i, info in enumerate(csi_cameras()):
             print(f"  ribbon camera {i}: {info}")
     cap = open_camera()
-    ok, frame = cap.read()
-    print("frame:", frame.shape if ok else "NONE -- camera opened but gave no image")
+    # Auto-exposure, white balance and focus take a moment to settle; the
+    # first frame is not representative.
+    ok, frame = False, None
+    for _ in range(45):
+        ok, frame = cap.read()
+    if not ok:
+        cap.release()
+        sys.exit("frame: NONE -- camera opened but gave no image")
+    print("frame:", frame.shape)
+    cv2.imwrite("camera_check.jpg", frame)
+    print("saved camera_check.jpg")
+    if isinstance(cap, PiCamera):
+        print("controls:", {k: v for k, v in cap.controls.items()
+                            if k != "FrameDurationLimits"} or "defaults")
+        for line in exposure_report(cap.metadata(), cap.frame_us, cap.gain_range):
+            print(" ", line)
     cap.release()

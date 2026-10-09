@@ -12,6 +12,9 @@ voices/
 # Backup written by backfill_person.py
 *.csv.bak
 
+# Snapshot written by python camera.py
+camera_check.jpg
+
 # OS / editor
 .DS_Store
 Thumbs.db
