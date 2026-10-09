@@ -58,7 +58,7 @@ on Linux/macOS everything else works, but speech output will not.
 | `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
 | `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
 | `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing and under what condition → appends to `eval_results.csv`. `--width/--height/--fps` emulate slower hardware | `SPACE` start 4s capture · `n` skip · `q` quit |
-| `python hw_report.py` | Summarise `eval_results.csv` by hardware profile | — |
+| `python hw_report.py` | Summarise `eval_results.csv` by device and hardware profile | — |
 
 `collect_data.py` asks who is signing and **appends** (never overwrites), so data
 from multiple people accumulates.
@@ -100,7 +100,8 @@ takes and later in ~8s takes, is read by a model that has never seen her at
 poses far from where other signers sit. Roughly 100 rows (~8 seconds) per label
 is both enough data and short enough to stay consistent.
 
-`evaluate.py` records **both the signer and the condition on every row**, so a
+`evaluate.py` records **the signer, the condition and the device on every row**
+(the device is detected: `pi5` on the Pi, `laptop` otherwise), so a
 run spanning several people and several environments can be split by either
 afterwards — one label for the whole run cannot tell "this person struggles"
 from "this lighting is hard". It is the real accuracy number, distinct from the
@@ -271,6 +272,12 @@ below the camera's 33 ms frame interval the board actually is.
 | >= 25-30 | motion signs (J/Z) too — full alphabet |
 | 12-25 | static letters and word signs; J/Z unreliable |
 | < 12 | static letters degrade as well, badly at low resolution |
+
+First Pi 5 results (ribbon camera, 640x480): `bench_pi.py` held 29.9fps for
+120s at 55-60°C, i.e. the camera's 30fps ceiling with no throttling; the full
+`evaluate.py` pipeline ran at ~25fps and scored 25/26, every static letter
+correct and Z committed as X. One signer, one run: a first data point, not
+yet the thesis figure.
 
 ### Camera
 

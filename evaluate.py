@@ -61,15 +61,6 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
     return local.flatten()
 
 
-RESULTS_HEADER = ["person", "condition", "profile", "width", "height",
-                  "fps_cap", "fps_actual", "expected", "committed", "correct"]
-# Older layouts, migrated in place on first run rather than left incomparable.
-LEGACY_HEADERS = [
-    ["condition", "expected", "committed", "correct"],
-    ["person", "condition", "expected", "committed", "correct"],
-]
-
-
 def ask(prompt, default):
     value = input(prompt).strip().lower()
     return value or default
@@ -78,35 +69,28 @@ def ask(prompt, default):
 def open_results():
     """Append to eval_results.csv, migrating older layouts in place.
 
-    Two columns were added over time and both matter for comparing runs:
-    `person`, without which a multi-person multi-environment run cannot be
-    split by either afterwards, and the hardware-profile columns, without
-    which a 320x240 run is indistinguishable from a native-resolution one.
-    Rows predating a column are filled with what is actually known about them
-    -- 'unknown' for the signer, native/uncapped for the profile, since every
-    earlier run was at the camera's own resolution and frame rate.
+    Columns were added as the comparisons grew: `person` and `condition`, so
+    a run can be split by signer or environment; the hardware-profile
+    columns, so a 320x240 run is not mistaken for a native one; and `device`,
+    so a laptop run is not pooled with the same profile on the Pi. See
+    hwprofile.migrate_rows for what older rows are filled with.
     """
     if os.path.exists(RESULTS_PATH):
         with open(RESULTS_PATH, newline="") as fh:
             rows = list(csv.reader(fh))
-        if rows and rows[0] in LEGACY_HEADERS:
-            old = rows[0]
-            pad_person = ["unknown"] if old[0] != "person" else []
+        migrated = hwprofile.migrate_rows(rows)
+        if migrated:
             with open(RESULTS_PATH, "w", newline="") as fh:
-                w = csv.writer(fh)
-                w.writerow(RESULTS_HEADER)
-                for r in rows[1:]:
-                    r = pad_person + r
-                    # person, condition, [profile...], expected, committed, correct
-                    w.writerow(r[:2] + ["native@uncapped", "", "", "", ""] + r[2:])
+                csv.writer(fh).writerows(migrated)
             print(f"Migrated {len(rows)-1} existing rows in {RESULTS_PATH} to the "
-                  f"current layout (earlier runs were native resolution, uncapped).")
+                  f"current layout (earlier runs: laptop, native resolution, "
+                  f"uncapped).")
         csv_file = open(RESULTS_PATH, "a", newline="")
         return csv_file, csv.writer(csv_file)
 
     csv_file = open(RESULTS_PATH, "a", newline="")
     writer = csv.writer(csv_file)
-    writer.writerow(RESULTS_HEADER)
+    writer.writerow(hwprofile.RESULTS_HEADER)
     return csv_file, writer
 
 
@@ -199,6 +183,7 @@ def main():
               f"{actual_w}x{actual_h}. Logging what it gave.")
     limiter = hwprofile.FrameLimiter(args.fps)
     profile = hwprofile.describe(actual_w, actual_h, args.fps)
+    device = hwprofile.device_label()
     if args.fps and args.fps < hwprofile.motion_floor_fps():
         print(f"NOTE: {args.fps}fps is below the {hwprofile.motion_floor_fps():.1f}fps "
               f"floor -- J and Z cannot fire at this rate, by construction.")
@@ -219,7 +204,7 @@ def main():
     consecutive_missed = 0
     baseline_len = 0  # confirmed_string length when the capture window started
 
-    print(f"\nRunning eval for condition: {condition} / {profile}")
+    print(f"\nRunning eval for condition: {condition} / {device} / {profile}")
     print(f"{len(sequence)} captures: {' '.join(sequence[:12])}"
           f"{' ...' if len(sequence) > 12 else ''}")
     print("SPACE = start capture | X = void the last one | N = skip | Q = quit")
@@ -283,8 +268,9 @@ def main():
                 committed = debouncer.confirmed_string[baseline_len:]
                 correct = target in committed
                 results.append((target, committed, correct))
-                writer.writerow([person, condition, profile, actual_w, actual_h,
-                                 args.fps or "", f"{limiter.achieved_fps():.1f}",
+                writer.writerow([person, condition, device, profile,
+                                 actual_w, actual_h, args.fps or "",
+                                 f"{limiter.achieved_fps():.1f}",
                                  target, committed, correct])
                 csv_file.flush()
                 run_rows += 1
@@ -308,8 +294,9 @@ def main():
             break
         elif key == ord('n') and not capturing:
             results.append((target, "", False))
-            writer.writerow([person, condition, profile, actual_w, actual_h,
-                             args.fps or "", f"{limiter.achieved_fps():.1f}",
+            writer.writerow([person, condition, device, profile,
+                             actual_w, actual_h, args.fps or "",
+                             f"{limiter.achieved_fps():.1f}",
                              target, "", False])
             csv_file.flush()
             run_rows += 1
@@ -339,7 +326,7 @@ def main():
     # ── This run's summary ───────────────────────────────────────────────
     if results:
         n_correct = sum(1 for _, _, ok in results if ok)
-        print(f"\n{person} / {condition} / {profile}: "
+        print(f"\n{person} / {condition} / {device} / {profile}: "
               f"{n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
         print(f"  camera delivered {limiter.capture_fps():.1f}fps, "
               f"pipeline processed {limiter.achieved_fps():.1f}fps "

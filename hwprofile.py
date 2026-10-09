@@ -118,3 +118,59 @@ def describe(width, height, fps):
 # has to be met inside window_ms.
 def motion_floor_fps(min_samples=8, window_ms=650):
     return (min_samples - 1) * 1000.0 / window_ms
+
+
+def device_label(model_path="/proc/device-tree/model", env=None):
+    """Which machine a result was measured on, for the `device` column.
+
+    The profile says what resolution and frame rate a run used, but not what
+    did the work: a 640x480 run on the laptop and one on the Pi share a
+    profile and must not be pooled. ASL_DEVICE overrides; otherwise a Pi is
+    recognised from its device-tree model string ("Raspberry Pi 5 Model B
+    Rev 1.0" -> "pi5"), and anything else is the development laptop.
+    """
+    import os
+    import re
+    env = os.environ if env is None else env
+    if env.get("ASL_DEVICE"):
+        return env["ASL_DEVICE"].strip().lower()
+    try:
+        with open(model_path) as fh:
+            model = fh.read().strip("\x00 \n")
+    except OSError:
+        return "laptop"
+    m = re.match(r"Raspberry Pi (\d+)", model)
+    if m:
+        return f"pi{m.group(1)}"
+    return re.sub(r"\W+", "_", model).strip("_").lower() or "laptop"
+
+
+# eval_results.csv layout. Columns were added over time; older files are
+# migrated in place, each missing column filled with what is actually known
+# about rows that predate it.
+RESULTS_HEADER = ["person", "condition", "device", "profile", "width", "height",
+                  "fps_cap", "fps_actual", "expected", "committed", "correct"]
+LEGACY_HEADERS = [
+    ["condition", "expected", "committed", "correct"],
+    ["person", "condition", "expected", "committed", "correct"],
+    ["person", "condition", "profile", "width", "height",
+     "fps_cap", "fps_actual", "expected", "committed", "correct"],
+]
+# Every run before a column existed was on the laptop, by an unrecorded
+# signer, at the camera's own resolution and frame rate.
+LEGACY_FILL = {"person": "unknown", "device": "laptop",
+               "profile": "native@uncapped"}
+
+
+def migrate_rows(rows):
+    """Rewrite [header, *rows] in the current layout; None if already current."""
+    if not rows or rows[0] == RESULTS_HEADER:
+        return None
+    if rows[0] not in LEGACY_HEADERS:
+        raise ValueError(f"unrecognised eval_results.csv header: {rows[0]}")
+    old = rows[0]
+    out = [RESULTS_HEADER]
+    for r in rows[1:]:
+        have = dict(zip(old, r))
+        out.append([have.get(c, LEGACY_FILL.get(c, "")) for c in RESULTS_HEADER])
+    return out

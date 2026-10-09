@@ -1,4 +1,7 @@
 """Offline tests for the hardware-emulation profile. Standard library only."""
+import csv
+import os
+import tempfile
 import unittest
 
 import hwprofile
@@ -77,6 +80,78 @@ class TestDescribe(unittest.TestCase):
         self.assertEqual(hwprofile.describe(320, 240, 15), "320x240@15fps")
         self.assertEqual(hwprofile.describe(None, None, None), "native@uncapped")
         self.assertEqual(hwprofile.describe(640, 480, None), "640x480@uncapped")
+
+
+
+class TestDeviceLabel(unittest.TestCase):
+
+    def label(self, model, env=None):
+        with tempfile.NamedTemporaryFile("w", delete=False) as fh:
+            fh.write(model)
+        self.addCleanup(os.remove, fh.name)
+        return hwprofile.device_label(fh.name, env or {})
+
+    def test_pi_models(self):
+        # The device tree string is NUL-terminated on a real Pi.
+        self.assertEqual(self.label("Raspberry Pi 5 Model B Rev 1.0\x00"), "pi5")
+        self.assertEqual(self.label("Raspberry Pi 4 Model B Rev 1.4\x00"), "pi4")
+
+    def test_no_device_tree_is_the_laptop(self):
+        self.assertEqual(hwprofile.device_label("/nonexistent/model", {}), "laptop")
+
+    def test_other_boards_keep_their_name(self):
+        self.assertEqual(self.label("NVIDIA Jetson Nano Developer Kit\x00"),
+                         "nvidia_jetson_nano_developer_kit")
+
+    def test_env_overrides(self):
+        self.assertEqual(self.label("Raspberry Pi 5 Model B", {"ASL_DEVICE": " Desk-PC "}),
+                         "desk-pc")
+
+
+class TestMigrateRows(unittest.TestCase):
+
+    TAIL = ["A", "A", "True"]
+
+    def test_current_layout_is_left_alone(self):
+        self.assertIsNone(hwprofile.migrate_rows([hwprofile.RESULTS_HEADER]))
+        self.assertIsNone(hwprofile.migrate_rows([]))
+
+    def test_every_legacy_layout_reaches_the_current_one(self):
+        rows = {
+            0: ["green", "A", "A", "True"],
+            1: ["omar", "green", "A", "A", "True"],
+            2: ["omar", "green", "320x240@10fps", "320", "240", "10", "9.9",
+                "A", "A", "True"],
+        }
+        for i, header in enumerate(hwprofile.LEGACY_HEADERS):
+            out = hwprofile.migrate_rows([header, rows[i]])
+            self.assertEqual(out[0], hwprofile.RESULTS_HEADER)
+            got = dict(zip(out[0], out[1]))
+            self.assertEqual(got["device"], "laptop")
+            self.assertEqual(got["condition"], "green")
+            self.assertEqual([got["expected"], got["committed"], got["correct"]],
+                             self.TAIL)
+            self.assertEqual(got["person"], "unknown" if i == 0 else "omar")
+        # Profile columns that were recorded survive; missing ones are filled.
+        self.assertEqual(dict(zip(hwprofile.RESULTS_HEADER,
+                                  hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[2],
+                                                          rows[2]])[1]))["fps_actual"],
+                         "9.9")
+        self.assertEqual(hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[0],
+                                                 rows[0]])[1][3], "native@uncapped")
+
+    def test_unknown_header_is_refused(self):
+        with self.assertRaises(ValueError):
+            hwprofile.migrate_rows([["what", "is", "this"]])
+
+    def test_repo_results_file_is_current(self):
+        # Rows written by evaluate.py are appended to this layout as-is, so a
+        # committed file in an old layout would mislabel every later row.
+        with open(os.path.join(os.path.dirname(__file__) or ".",
+                               "eval_results.csv"), newline="") as fh:
+            rows = list(csv.reader(fh))
+        self.assertIsNone(hwprofile.migrate_rows(rows))
+        self.assertTrue(all(len(r) == len(hwprofile.RESULTS_HEADER) for r in rows))
 
 
 if __name__ == "__main__":
