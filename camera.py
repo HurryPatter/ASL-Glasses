@@ -62,6 +62,9 @@ def exposure_report(meta, frame_us, gain_range=None):
     if "Lux" in meta:
         lines.append(f"scene brightness ~{meta['Lux']:.0f} lux "
                      f"(an evening room ~50, an office ~300-500)")
+    if "ColourTemperature" in meta:
+        lines.append(f"white balance set for ~{meta['ColourTemperature']:.0f}K "
+                     f"(warm indoor bulbs ~2700-3000K, daylight ~5500-6500K)")
     if exp >= 0.9 * frame_us:
         lines.append("LIGHT-LIMITED: exposure is at the 30fps cap, so brightness "
                      "now costs noise. Add light on the hand (lamp, window); "

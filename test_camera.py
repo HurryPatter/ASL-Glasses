@@ -253,11 +253,12 @@ class TestLowLight(CameraTest):
     def test_report_flags_exposure_at_the_frame_cap(self):
         cam, cap = self.open(camera_controls=CM3_CONTROLS,
                              metadata={"ExposureTime": 33000, "AnalogueGain": 9.5,
-                                       "Lux": 40})
+                                       "Lux": 40, "ColourTemperature": 6800})
         text = " ".join(cam.exposure_report(cap.metadata(), cap.frame_us,
                                             cap.gain_range))
         self.assertIn("LIGHT-LIMITED", text)
         self.assertIn("16x", text)
+        self.assertIn("6800K", text)
 
     def test_report_says_when_there_is_headroom(self):
         cam, cap = self.open(metadata={"ExposureTime": 8000, "AnalogueGain": 1.2})
