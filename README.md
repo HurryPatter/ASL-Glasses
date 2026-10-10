@@ -139,20 +139,27 @@ architecture change.
 
 ## Results
 
-`evaluate.py` runs to date, full alphabet including J/Z:
+`evaluate.py` runs to date at the camera's own resolution and frame rate,
+full alphabet including J/Z (the emulated low-resolution / low-fps runs are
+under *Choosing the embedded target*; `python hw_report.py` prints both):
 
-| Condition | Score | Miss |
-| --- | --- | --- |
-| `green_bg_dim` | 25/26 (96.2%) | G read as Q |
-| `white_bg_dim` | 25/26 (96.2%) | Z never fired (read as X) |
-| **Combined** | **50/52 (96.2%)** | |
+| Device | Signer | Condition | Score | Miss |
+| --- | --- | --- | --- | --- |
+| laptop | (unrecorded) | `green_bg_dim` | 25/26 | G read as Q |
+| laptop | (unrecorded) | `white_bg_dim` | 25/26 | Z read as X |
+| laptop | Nourhan | `green_bg_indoor` | 25/26 | W read as X |
+| laptop | Laila | `outdoor` | 24/26 | S, U nothing committed |
+| laptop | Hagar | `indoor_brown_bg` | 25/26 | G nothing committed |
+| laptop | Omar | `indoor_green_bg` | 25/26 | Q read as Z |
+| **laptop** | | **all** | **149/156 (95.5%)** | |
+| **Pi 5** | Omar | `indoor_white_bg` | **25/26** | Z read as X |
 
-G was read correctly in the second run, so the G/Q confusion is not (yet) a
-recurring failure. See `NOTES.md` for the open issues behind both misses.
+No single letter fails consistently; Z read as X is the one miss that recurs
+(and appears as a leading X in several correct Z captures). See `NOTES.md`.
 
 `evaluate.py` scores with a substring test, so a committed string of
-`QQQQQQQQQQ` counts as a correct `Q`. Both runs above predate the debouncer fix
-and contain many such strings — see `NOTES.md`.
+`QQQQQQQQQQ` counts as a correct `Q`. The first two runs predate the debouncer
+fix and contain many such strings — see `NOTES.md`.
 
 ### Model accuracy, measured honestly
 
@@ -302,6 +309,13 @@ hand; `ASL_CAMERA_EV=1 python main.py` (or `2`) brightens further using gain.
 Camera Module 3's autofocus is set to continuous so a hand at arm's length
 stays sharp.
 
+**Open: the first Pi run rendered grey curtains deep blue.** A red/blue swap
+would leave grey grey, so this points at white balance (camera module, tuning
+or mixed lighting) rather than channel order. To settle it, compare
+`camera_check.jpg` from `python camera.py` (our pipeline, which also prints the
+white-balance temperature) with `rpicam-still -o still.jpg` (the Pi's own app,
+bypassing our code), and note the module from `rpicam-hello --list-cameras`.
+
 **The Pi 5's camera sockets are 22-pin, smaller than older Pis' 15-pin.** A
 standard Camera Module needs a **22-to-15-pin adapter cable**. Connect it only
 with the Pi powered off.
@@ -319,6 +333,38 @@ which does support it.
 `main.py`, `collect_data.py` and `evaluate.py` open a preview window, so they
 need the desktop: a monitor, or Screen Sharing in Raspberry Pi Connect.
 `bench_pi.py`, `audio.py` and `camera.py` do not.
+
+### Working remotely (no monitor)
+
+- **Raspberry Pi Connect** (connect.raspberrypi.com, signed in with the same
+  Raspberry Pi ID the Pi is linked to): *Remote shell* for the command line,
+  *Screen sharing* for the desktop. Works from any network, campus included.
+  If the Pi is not listed, link it from a terminal on the Pi:
+  `rpi-connect on && rpi-connect signin`, then `loginctl enable-linger` so it
+  survives reboots. The site's "New auth key" page is for flashing a new SD
+  card in Imager — not needed for a Pi that is already running.
+- **SSH** from a laptop on the same network: `ssh thesis@aslpi.local`.
+- **Close Screen Sharing before benchmarking** — streaming the desktop costs
+  CPU and lowers the fps being measured. Run `bench_pi.py` over SSH or the
+  Remote shell; for a thesis-grade `evaluate.py` run, prefer a monitor.
+
+### Getting results off the Pi
+
+The Remote shell cannot download files. Either copy them from the laptop,
+in PowerShell (not inside an SSH session — `scp` runs on the receiving
+machine, and a Windows path typed on the Pi turns into `/home/thesisDownloads`):
+
+```powershell
+scp thesis@aslpi.local:~/ASL-Glasses/eval_results.csv $HOME\Downloads\
+```
+
+or give the Pi an SSH key on GitHub once (`ssh-keygen -t ed25519`, add
+`~/.ssh/id_ed25519.pub` under GitHub → Settings → SSH keys, then
+`git remote set-url origin git@github.com:HurryPatter/ASL-Glasses.git`) and
+commit and push from the Pi like anywhere else.
+
+`eval_results.csv` records a **`device`** column (`pi5` on the Pi, `laptop`
+otherwise; `ASL_DEVICE` overrides), so Pi and laptop runs are never pooled.
 
 ## Choosing the embedded target
 
@@ -392,16 +438,20 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `nlp_bridge.py` | SymSpell correction, word-sign lookup |
 | `audio.py` | Text-to-speech: Windows voice, espeak-ng or Piper, auto-detected |
 | `setup_pi.sh` | One-command Raspberry Pi setup |
-| `camera.py` | Opens a ribbon camera or USB webcam behind one interface |
+| `camera.py` | Opens a ribbon camera or USB webcam behind one interface; `python camera.py` checks exposure and colour |
+| `bench_pi.py` | Landmarker throughput and per-frame latency on new hardware |
+| `hwprofile.py` | Frame-rate emulation, device detection, results-file layout |
+| `hw_report.py` | `eval_results.csv` summarised by device and hardware profile |
 | `test_debouncer.py` | Offline debouncer tests (no camera needed) |
 | `test_dataset.py` | Offline schema/grouping tests |
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `test_audio.py` | Offline speech tests (no speaker needed) |
 | `test_camera.py` | Offline camera-selection tests (no camera needed) |
 | `test_nlp_bridge.py` | Spell-correction tests |
+| `test_hwprofile.py` | Frame limiter, device detection, results migration |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
-| `landmark_data.csv` | Training data (21,526 rows, 27 classes, 3 people) |
+| `landmark_data.csv` | Training data (30,807 rows, 27 classes, 5 signers) |
 | `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |
 | `eval_results.csv` | Accumulated evaluation log |
 | `hand_landmarker.task` | MediaPipe hand landmarker model |
@@ -409,6 +459,11 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 ### Branches
 
 - **`main`** — the ML pipeline. This is the thesis basis.
+- **`pi5`** — `main` plus everything needed to run on the Raspberry Pi 5
+  (ribbon camera, Linux speech, pinned dependencies, hardware emulation and
+  benchmarking). This is what runs on the Pi; it merges back into `main`.
+- **`hardware-emulation`** — the laptop-side emulation work, since folded
+  into `pi5`.
 - **`trial`** — a rule-based, non-ML geometric classifier (`rules.py` +
   `motion.py`). Kept as a **fallback / last resort only**. It proved the
   landmark-geometry concept before `main` adopted an ML version of the same idea.

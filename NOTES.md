@@ -351,12 +351,21 @@ flags the class builds). **Piper was not**: its CLI was confirmed from
 development sandbox, so synthesis and latency are unmeasured until it runs on
 the Pi.
 
-### Hardware target still undecided
+### DECIDED: hardware target is the Raspberry Pi 5
 
-**Measure before buying.** `evaluate.py --width/--height/--fps` emulates slower
-hardware on the laptop and `hw_report.py` compares the runs; see the README.
-The two numbers that decide it are whether accuracy survives 320x240, and how
-low the frame rate can go before recognition degrades.
+**Measured before buying.** `evaluate.py --width/--height/--fps` emulated
+slower hardware on the laptop and `hw_report.py` compared the runs:
+
+- **J/Z need ~25-30fps in practice**, not just the 10.8fps floor: at a 15fps
+  cap J and Z both failed, and at 12fps one of two survived.
+- **Low resolution does not rescue a slow board**: 320x240 at 10fps collapsed
+  to 11/24 (11/23 on static letters alone), against 25/26 at 640x480
+  uncapped.
+- That rules out the Pi 4 (8-15fps reported) and the Jetson Nano (<5fps reported;
+  the TFLite GPU delegate does not load on it). An MCU cannot run MediaPipe at all,
+  which would have meant giving up "fully on-device". The Raspberry AI Kit is
+  discontinued (now AI HAT+), and its Hailo chip would need the `.task` models
+  converted to `.hef` — unnecessary if the CPU keeps up.
 
 Two things learned building that emulation:
 
@@ -369,13 +378,39 @@ Two things learned building that emulation:
 - The achievable caps on a 30fps camera are otherwise 30, 15, 10, 7.5... so
   without that fix the only honest test points would have been 15 and 10.
 
+**On the Pi 5 itself** (ribbon camera, 640x480, `pi5` branch):
 
+- `bench_pi.py`: **29.9fps sustained over 120s at 55-60°C** — the camera's
+  30fps ceiling, no throttling. That run had no hand in view, so it measured
+  only the palm-detector path; `bench_pi.py` now reports per-frame processing
+  time split by hand / no hand and warns when a hand was in view for under
+  half the run. *Pending: a re-run with a hand up, for the latency figure.*
+- `evaluate.py`: **25/26** at ~25fps, every static letter correct, Z read as
+  X (the same miss as on the laptop). The 5fps drop from the benchmark is the
+  preview window and classifier — and Screen Sharing, if it was on.
+- Results now carry a **`device`** column. A 640x480 laptop run and a 640x480
+  Pi run share a profile, and `hw_report.py` would otherwise have pooled them.
 
-True MCU (ESP32/STM32-class) vs. small Linux SBC (Pi Zero 2 W / Jetson-Nano
-class). This matters a lot: MediaPipe needs real compute and does not run on
-bare MCUs, so an MCU target likely means the glasses only do capture and
-streaming while MediaPipe and inference run on a paired phone or server — which
-would give up the "fully on-device" result. Needs to be locked down soon.
+### OPEN: the Pi ribbon camera looks dark, and grey renders blue
+
+**Dark** is largely by design. `camera.py` pins the frame rate at 30fps so J/Z
+get steady samples, which caps every exposure at 33ms; in a dim room the camera
+raises gain instead of exposing longer (a webcam would quietly drop to 15fps).
+`python camera.py` now says whether that limit is hit (`LIGHT-LIMITED`);
+`ASL_CAMERA_EV` brightens further using gain. Continuous autofocus is enabled
+on modules that have it (Camera Module 3).
+
+**Blue** is not explained yet. Grey curtains came out deep blue. A red/blue
+channel swap would leave grey grey, so the suspect is white balance — the
+module's tuning, or mixed warm-lamp / window light — not the BGR handling.
+Next: `rpicam-hello --list-cameras`, then compare `camera_check.jpg` (our
+pipeline, now reporting the white-balance temperature) with
+`rpicam-still -o still.jpg` (bypasses our code). Both blue → camera/lighting;
+only ours blue → a bug here.
+
+Brightness and colour matter only as far as MediaPipe finds the hand; the
+thesis runs should be in a lit room, with one deliberately dim run labelled
+as such.
 
 ## Deliberate non-changes
 
@@ -401,27 +436,31 @@ would give up the "fully on-device" result. Needs to be locked down soon.
 
 ## Current status
 
-- Full pipeline working end-to-end, fully on-device.
-- Training data: **21,526 rows across 27 classes** — 24 static letters plus
-  `HELLO` (490), `IHATEYOU` (468) and `ILY` (341) — collected from at least two
-  people's hands.
-- Word signs are collected, trained and live in `landmark_labels.json`.
-- Evaluation: two full runs, **50/52 combined (96.2%)**. See README.
+- Full pipeline working end-to-end, fully on-device, **on the Raspberry Pi 5**
+  as well as the laptop (`pi5` branch).
+- Training data: **30,807 rows across 27 classes** (24 static letters plus
+  `HELLO`, `IHATEYOU`, `ILY`) from five signers; word signs validated across
+  three of them.
+- Held-out-person accuracy, seed-averaged: **86.8% letters, 87.3% all 27**.
+- End-to-end evaluation on the laptop: **149/156 (95.5%)** across five
+  signers and five conditions. On the Pi 5: **25/26** (one signer, one run).
+- Remote access to the Pi works through Raspberry Pi Connect and SSH; see
+  the README.
 
 ## Next steps
 
-1. Collection session with the rest of the team. Target ~100 rows per label
-   per person and as many people as possible (8-10); the three word signs
-   need a second signer most urgently. Rows per person stop paying off past
-   roughly 100/label — see the accuracy issue above.
-2. Retrain on the combined dataset.
-3. More `evaluate.py` rounds across people and conditions, to build a
-   defensible accuracy number and to settle whether G/Q is real.
-4. Instrument and fix the Z window (above) — now safer, since the travel
-   gate bounds the false positives that widening the window would invite.
+1. **Pi camera colour/brightness** — run the comparison in the open issue
+   above and fix white balance if it is the camera.
+2. **Pi measurements for the thesis** — `bench_pi.py` with a hand in view
+   (latency); `evaluate.py` on the Pi in the same condition as a laptop run
+   (`indoor_green_bg`) plus `--letters JZ --repeat 10`; then the other
+   signers on the Pi.
+3. Instrument and fix the Z window (above) — Z read as X is the one miss that
+   recurs, on both devices.
+4. Watch K↔P and S↔N, the largest cross-person confusions.
 5. Validate the debouncer fix on camera — specifically the "LL" in HELLO,
-   which now needs a bounce longer than `blank_ms` (250ms). If doubles are
-   hard to produce, lower `blank_ms`; if single holds still repeat, raise it.
-6. **Decide the embedded hardware target (MCU vs. SBC)** — gates the port off
-   the dev laptop.
-7. Update the thesis slides to the actual on-device architecture.
+   which now needs a bounce longer than `blank_ms` (250ms).
+6. Merge `pi5` into `main` once the Pi results are in.
+7. Update the thesis slides to the actual on-device architecture, and the
+   hardware memo (it predates the Pi 5 measurements and still cites the
+   discontinued AI Kit).
