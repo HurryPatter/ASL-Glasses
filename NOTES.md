@@ -442,8 +442,8 @@ as such.
   `HELLO`, `IHATEYOU`, `ILY`) from five signers; word signs validated across
   three of them.
 - Held-out-person accuracy, seed-averaged: **86.8% letters, 87.3% all 27**.
-- End-to-end evaluation on the laptop: **149/156 (95.5%)** across five
-  signers and five conditions. On the Pi 5: **25/26** (one signer, one run).
+- End-to-end evaluation on the laptop: **149/156 (95.5%)** across four
+  signers and six setups. On the Pi 5: **25/26** (one signer, one run).
 - Remote access to the Pi works through Raspberry Pi Connect and SSH; see
   the README.
 
