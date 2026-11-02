@@ -436,6 +436,97 @@ as such.
   distinct class anyway. These would need a short two-state transition detector
   like `motion.py`, not a static pose — same risk class as J/Z.
 
+## Road to the glasses
+
+**Decided: the signer wears the glasses.** The camera looks down at the
+wearer's own hands, and speech goes out loud to the person they are talking
+to. The finale is a working, 3D-printed pair.
+
+### What that changes
+
+- **The camera sees the hands from behind and above, not from the front.**
+  Every row of training data so far is the opposite view: a signer facing a
+  camera. The normalization helps more than it might seem — seen from behind,
+  a flat hand is roughly a mirror image of the front view, and the thumb-on-+x
+  flip already undoes mirroring — but the steep downward angle foreshortens
+  the fingers, and from behind the back of the hand hides curled fingertips
+  and the thumb tucked under them. Expect **A/E/M/N/S/T** (told apart by
+  exactly those) to suffer most. **New first-person data is needed**,
+  collected with the camera in its final position on the head.
+- **Mount first, then collect.** The camera's position and tilt are part of
+  what the model learns, so data is collected only after the mount is fixed.
+- **Wide angle, tilted down.** The hands sit 30-50cm away and well below the
+  eye line while the wearer looks at the other person, not at their hands. A
+  wide lens (around 90-120° diagonal) tilted 30-40° down; the hand is large
+  in frame, so detection at distance stops being a concern.
+- **J and Z need retuning.** `_is_j` reads "pinky drops" as image y growing;
+  from above, a downward movement is partly along the camera's line of sight
+  and shows as less. `_is_z`'s stroke count does not care about direction, but
+  its drift and travel thresholds were set on the front view.
+- **Head movement moves the picture.** Signers move their heads; the motion
+  rules track the hand in image coordinates, so head motion can fake or spoil
+  a J or Z. Measure with first-person data before choosing a fix.
+- **Speech has to be loud**, so it needs a real amplifier and speaker. A
+  speaker on the body (chest clip or the pocket unit) is louder and keeps the
+  cable to the head to just the camera; one on the glasses frame is weaker.
+- **The wearer cannot hear the output**, so they need another way to see what
+  was recognised: a small display (e.g. a 0.96" OLED on the body unit), a
+  buzz per letter, or both. A Deaf user must be able to catch a wrong letter
+  before it is spoken.
+- **Speaking without a keyboard**: a "send" gesture or dropping the hands for
+  ~1.5s, plus a button on the body unit.
+
+### Hardware
+
+- **Camera: a small USB (UVC) module, not the ribbon camera.** The official
+  Pi 5 ribbon cables top out at 50cm and are flat and fragile; USB is round,
+  flexible and can run 1-2m from pocket to head, and `camera.py` already
+  supports it. Buy two candidates. Requirements: 640x480 at a steady 30fps
+  (MJPEG preferred), manual exposure (so it does not drop to 15fps in dim
+  light), wide angle, focus covering 20-60cm, small enough for the frame.
+- **Body unit**: Pi 5 with the Active Cooler, USB-C power bank (a non-5A bank
+  limits USB devices to 600mA in total — enough for one camera), amplifier
+  (e.g. MAX98357A on the Pi's I2S pins, or a USB audio adapter) and speaker,
+  feedback display, one button. Vented, 3D-printed case.
+- **Glasses**: 3D-printed (Onshape or Fusion 360, starting from an existing
+  frame), camera pocket at the bridge in 0/20/35° tilt variants, cable
+  channel through one arm with strain relief at the exit, no hinges; PLA for
+  test prints, PETG for the final.
+
+### Thesis angle
+
+Fingerspelling recognition from the **signer's own viewpoint** is a stronger
+question than the front view: it is what a wearable actually sees. The
+existing front-view dataset becomes the baseline, and three measurements
+make the chapter:
+
+1. **Transfer**: the current model, unchanged, on first-person video — how
+   much of the front-view learning carries over.
+2. **First-person model**: retrained on first-person data, evaluated
+   leave-one-person-out as before; per-letter results show which letters the
+   viewpoint costs.
+3. **Mixed**: front + first-person data together, against first-person only.
+
+### Order of work
+
+1. **Feasibility, this week, nothing to buy**: put the Pi and ribbon camera
+   on a cap or headband (the ribbon reaches when the Pi rides on the head),
+   tilt the camera down, and run `evaluate.py` with the current model,
+   condition `firstperson_cap`. That is measurement 1 above.
+2. Order the USB cameras, amplifier, speaker, display and power bank.
+3. Software: USB camera locked at 30fps; a `view` column in the dataset
+   (`front` / `firstperson`) so training and evaluation can split or mix
+   views; auto-start without a window; speaking without a keyboard; the
+   feedback display.
+4. First wearable mount (a printed frame or a temporary one), fixed.
+5. Collect first-person data with that mount: ~100 rows per label per
+   person, as many signers as possible. Retrain; LOPO; retune J/Z.
+6. Final printed glasses and body unit; evaluate on the glasses; battery,
+   heat and end-to-end delay; record a demo video as a backup for the defence.
+
+**Open questions**: exact deadline and defence date; whether testing with
+people outside the team needs ethics approval; who takes CAD and hardware.
+
 ## Current status
 
 - Full pipeline working end-to-end, fully on-device, **on the Raspberry Pi 5**
@@ -451,18 +542,13 @@ as such.
 
 ## Next steps
 
-1. **Pi camera colour/brightness** — run the comparison in the open issue
-   above and fix white balance if it is the camera.
-2. **Pi measurements for the thesis** — `bench_pi.py` with a hand in view
-   (latency); `evaluate.py` on the Pi in the same condition as a laptop run
-   (`indoor_green_bg`) plus `--letters JZ --repeat 10`; then the other
-   signers on the Pi.
-3. Instrument and fix the Z window (above) — Z read as X is the one miss that
-   recurs, on both devices.
-4. Watch K↔P and S↔N, the largest cross-person confusions.
-5. Validate the debouncer fix on camera — specifically the "LL" in HELLO,
-   which now needs a bounce longer than `blank_ms` (250ms).
-6. Merge `pi5` into `main` once the Pi results are in.
-7. Update the thesis slides to the actual on-device architecture, and the
-   hardware memo (it predates the Pi 5 measurements and still cites the
-   discontinued AI Kit).
+1. **First-person feasibility test** (Road to the glasses, step 1) — the
+   single most informative thing to do next.
+2. Order the glasses hardware (two USB camera candidates first).
+3. Pi camera colour/brightness — the comparison in the open issue above,
+   less urgent now that the ribbon camera is not the final camera.
+4. `bench_pi.py` with a hand in view, for the latency figure.
+5. Instrument and fix the Z window — Z is still the miss that recurs, on both
+   devices; do it on first-person data once there is some.
+6. Merge `pi5` into `main`.
+7. Update the thesis slides and the hardware memo.
