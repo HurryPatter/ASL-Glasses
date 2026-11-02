@@ -152,7 +152,10 @@ under *Choosing the embedded target*; `python hw_report.py` prints both):
 | laptop | Hagar | `indoor_brown_bg` | 25/26 | G nothing committed |
 | laptop | Omar | `indoor_green_bg` | 25/26 | Q read as Z |
 | **laptop** | | **all** | **149/156 (95.5%)** | |
-| **Pi 5** | Omar | `indoor_white_bg` | **25/26** | Z read as X |
+| Pi 5 | Omar | `indoor_white_bg` | 25/26 | Z read as X |
+| Pi 5 | Nourhan | `indoor_lab` | 26/26 | — |
+| Pi 5 | Laila | `indoor_lab` | 24/26 | H, Z nothing committed |
+| **Pi 5** | | **all** | **75/78 (96.2%)** | |
 
 No single letter fails consistently; Z read as X is the one miss that recurs
 (and appears as a leading X in several correct Z captures). See `NOTES.md`.
@@ -282,9 +285,9 @@ below the camera's 33 ms frame interval the board actually is.
 
 First Pi 5 results (ribbon camera, 640x480): `bench_pi.py` held 29.9fps for
 120s at 55-60°C, i.e. the camera's 30fps ceiling with no throttling; the full
-`evaluate.py` pipeline ran at ~25fps and scored 25/26, every static letter
-correct and Z committed as X. One signer, one run: a first data point, not
-yet the thesis figure.
+`evaluate.py` pipeline ran at 25-29fps and scored **75/78 (96.2%) across three
+signers**, level with the laptop's 95.5%. Two of the three misses were Z (once
+read as X, once never fired), the same weak spot as on the laptop.
 
 ### Camera
 

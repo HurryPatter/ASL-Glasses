@@ -385,9 +385,11 @@ Two things learned building that emulation:
   only the palm-detector path; `bench_pi.py` now reports per-frame processing
   time split by hand / no hand and warns when a hand was in view for under
   half the run. *Pending: a re-run with a hand up, for the latency figure.*
-- `evaluate.py`: **25/26** at ~25fps, every static letter correct, Z read as
-  X (the same miss as on the laptop). The 5fps drop from the benchmark is the
-  preview window and classifier — and Screen Sharing, if it was on.
+- `evaluate.py`: **75/78 (96.2%)** over three signers at 25-29fps — Omar
+  25/26, Nourhan 26/26, Laila 24/26 — level with the laptop. Misses: Z twice
+  (read as X; never fired) and one H that never committed. The drop from the
+  benchmark's 30fps is the preview window and classifier, and Screen Sharing
+  when it was on.
 - Results now carry a **`device`** column. A 640x480 laptop run and a 640x480
   Pi run share a profile, and `hw_report.py` would otherwise have pooled them.
 
@@ -443,7 +445,7 @@ as such.
   three of them.
 - Held-out-person accuracy, seed-averaged: **86.8% letters, 87.3% all 27**.
 - End-to-end evaluation on the laptop: **149/156 (95.5%)** across four
-  signers and six setups. On the Pi 5: **25/26** (one signer, one run).
+  signers and six setups. On the Pi 5: **75/78 (96.2%)** across three signers.
 - Remote access to the Pi works through Raspberry Pi Connect and SSH; see
   the README.
 
