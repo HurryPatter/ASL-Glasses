@@ -15,6 +15,19 @@ Which camera, in order:
   2. a ribbon camera, if Picamera2 is installed and reports one
   3. a USB webcam via OpenCV
 
+USB cameras on Linux (the Pi, and the glasses' camera). Two things go wrong
+with a bare cv2.VideoCapture(0):
+  - On a Pi 5, /dev/video0 and the nodes after it belong to the Pi's own
+    camera hardware, present even with no ribbon camera attached, so a USB
+    camera arrives as /dev/video8 or later. usb_video_nodes() finds USB
+    cameras by where they hang in sysfs, and `index` picks among those.
+  - A webcam lengthens its exposure in dim light by quietly dropping to 15fps,
+    below what J and Z need. The camera is asked for 640x480 MJPEG at 30fps,
+    and its "dynamic frame rate" control is switched off with v4l2-ctl (apt:
+    v4l-utils), so it brightens with gain instead, as the ribbon camera does.
+    Cameras without that control, or without v4l2-ctl, are opened anyway; the
+    check in `python camera.py` says which happened.
+
 Frames are always BGR, as OpenCV and the rest of the pipeline expect.
 Picamera2's "RGB888" format is, despite the name, stored B,G,R -- which is
 why it is the format asked for below.
@@ -29,11 +42,19 @@ brighter image at the cost of more noise, and works only while there is gain
 left to give.
 """
 import os
+import subprocess
 import sys
 
 import cv2
 
 DEFAULT_SIZE = (640, 480)   # 4:3, matching the webcams the training data used
+SYSFS_V4L = "/sys/class/video4linux"
+# The control that lets a UVC camera slow its frame rate for longer exposures,
+# under its current name and the one older kernels use.
+DYNAMIC_FPS_CONTROLS = ("exposure_dynamic_framerate", "exposure_auto_priority")
+
+# What the last open_camera() did for a USB camera, for `python camera.py`.
+last_usb = {}
 
 
 def requested_ev(env=None):
@@ -91,22 +112,94 @@ def detect_source():
     return "csi" if csi_cameras() else "usb"
 
 
+def _linux():
+    return sys.platform.startswith("linux")
+
+
+def usb_video_nodes(sysfs=None):
+    """/dev/videoN numbers of attached USB cameras, in order.
+
+    A UVC camera registers two nodes, video capture and metadata; sysfs gives
+    the capture one index 0. Nodes not under a USB device (the Pi 5's camera
+    front end and ISP) are skipped.
+    """
+    sysfs = sysfs or SYSFS_V4L
+    try:
+        names = os.listdir(sysfs)
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        if not name.startswith("video") or not name[5:].isdigit():
+            continue
+        node = os.path.join(sysfs, name)
+        if "/usb" not in os.path.realpath(os.path.join(node, "device")):
+            continue
+        try:
+            with open(os.path.join(node, "index")) as fh:
+                if fh.read().strip() != "0":
+                    continue
+        except OSError:
+            pass
+        found.append(int(name[5:]))
+    return sorted(found)
+
+
+def lock_frame_rate(device, run=subprocess.run):
+    """Stop a UVC camera dropping its frame rate in dim light.
+
+    Returns the control name that was set, or None if the camera has neither
+    name or v4l2-ctl is not installed.
+    """
+    for control in DYNAMIC_FPS_CONTROLS:
+        try:
+            r = run(["v4l2-ctl", "-d", f"/dev/video{device}", "-c", f"{control}=0"],
+                    capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if r.returncode == 0:
+            return control
+    return None
+
+
 def open_camera(width=None, height=None, fps=30, index=0, source=None):
     """Open a camera and return a VideoCapture-like object.
 
-    width/height of None means the camera's default for USB, or 640x480 for
-    a ribbon camera. `index` selects which camera of the chosen kind.
+    width/height of None means 640x480 for a ribbon camera or a USB camera on
+    Linux, and the camera's own default elsewhere (the Windows laptops the
+    front-view data was collected on). `index` selects which camera of the
+    chosen kind.
     """
     source = source or detect_source()
     if source == "csi":
         size = (width, height) if (width and height) else DEFAULT_SIZE
         return PiCamera(size, fps, index)
 
-    cap = cv2.VideoCapture(index)
-    if width and height:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if not _linux():
+        cap = cv2.VideoCapture(index)
+        if width and height:
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        return cap
+
+    nodes = usb_video_nodes()
+    device = nodes[index] if index < len(nodes) else index
+    cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
+    w, h = (width, height) if (width and height) else DEFAULT_SIZE
+    # MJPEG first: uncompressed 640x480 at 30fps is close to what a USB 2.0
+    # camera can send, and many only offer 30fps in MJPEG.
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+    cap.set(cv2.CAP_PROP_FPS, fps)
+    last_usb.clear()
+    last_usb.update(device=device, found=nodes, locked=lock_frame_rate(device))
     return cap
+
+
+def fourcc_text(cap):
+    code = int(cap.get(cv2.CAP_PROP_FOURCC))
+    return "".join(chr((code >> 8 * i) & 0xFF) for i in range(4)).strip("\x00") or "?"
 
 
 def _af_continuous():
@@ -214,6 +307,17 @@ if __name__ == "__main__":
     print("frame:", frame.shape)
     cv2.imwrite("camera_check.jpg", frame)
     print("saved camera_check.jpg")
+    if last_usb:
+        print(f"USB camera /dev/video{last_usb['device']} "
+              f"(USB cameras found: {last_usb['found'] or 'none'}), "
+              f"format {fourcc_text(cap)}, {cap.get(cv2.CAP_PROP_FPS):.0f}fps requested")
+        if last_usb["locked"]:
+            print(f"  frame rate locked ({last_usb['locked']}=0): it will not "
+                  f"slow down in dim light")
+        else:
+            print("  could not lock the frame rate (no such control, or v4l2-ctl "
+                  "missing: sudo apt install v4l-utils). Check fps in a dim room "
+                  "with bench_pi.py.")
     if isinstance(cap, PiCamera):
         print("controls:", {k: v for k, v in cap.controls.items()
                             if k != "FrameDurationLimits"} or "defaults")

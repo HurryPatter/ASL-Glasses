@@ -7,7 +7,9 @@ interface the rest of the pipeline relies on.
 """
 import importlib
 import os
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -25,13 +27,18 @@ class FakeArray:
 def make_fake_cv2():
     cv2 = types.ModuleType("cv2")
     cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS = 3, 4, 5
+    cv2.CAP_PROP_FOURCC, cv2.CAP_V4L2 = 6, 200
+    cv2.VideoWriter_fourcc = lambda *c: sum(ord(ch) << 8 * i for i, ch in enumerate(c))
 
     class VideoCapture:
         instances = []
 
-        def __init__(self, index):
-            self.index, self.props = index, {}
+        def __init__(self, index, api=None):
+            self.index, self.api, self.props = index, api, {}
             VideoCapture.instances.append(self)
+
+        def get(self, prop):
+            return float(self.props.get(prop, 0))
 
         def set(self, prop, value):
             self.props[prop] = value
@@ -137,7 +144,14 @@ class TestWhichCamera(CameraTest):
         self.assertEqual(cam.detect_source(), "usb")
 
 
-class TestUsb(CameraTest):
+class TestUsbOffLinux(CameraTest):
+    """The Windows laptops the front-view data was collected on: unchanged."""
+
+    def load(self, **kw):
+        cam, cv2, pc = super().load(**kw)
+        p = mock.patch.object(cam, "_linux", return_value=False)
+        p.start(); self.addCleanup(p.stop)
+        return cam, cv2, pc
 
     def test_opens_videocapture_at_the_index(self):
         cam, cv2, _ = self.load(cameras=[])
@@ -151,6 +165,98 @@ class TestUsb(CameraTest):
         cap = cam.open_camera(320, 240)
         self.assertEqual(cap.props[cv2.CAP_PROP_FRAME_WIDTH], 320)
         self.assertEqual(cap.props[cv2.CAP_PROP_FRAME_HEIGHT], 240)
+
+
+def fake_sysfs(root, nodes):
+    """nodes: {video number: (device path, index)} as sysfs would show them."""
+    for n, (device, idx) in nodes.items():
+        d = os.path.join(root, f"video{n}")
+        os.makedirs(d)
+        os.symlink(device, os.path.join(d, "device"))
+        with open(os.path.join(d, "index"), "w") as fh:
+            fh.write(f"{idx}\n")
+
+
+PI5_WITH_WEBCAM = {
+    0: ("/sys/devices/platform/axi/1000880000.pcie/rp1-cfe", 0),
+    1: ("/sys/devices/platform/axi/1000880000.pcie/rp1-cfe", 0),
+    4: ("/sys/devices/platform/axi/1000880000.pcie/pispbe", 0),
+    8: ("/sys/devices/platform/axi/xhci-hcd.0/usb1/1-1/1-1:1.0", 0),
+    9: ("/sys/devices/platform/axi/xhci-hcd.0/usb1/1-1/1-1:1.0", 1),   # metadata
+}
+
+
+class TestUsbOnLinux(CameraTest):
+    """The Pi: find the USB camera, ask for 640x480 MJPEG at 30fps, lock it."""
+
+    def load(self, nodes=PI5_WITH_WEBCAM, lock_ok=True, **kw):
+        cam, cv2, pc = super().load(cameras=[], **kw)
+        root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, root)
+        fake_sysfs(root, nodes)
+        self.calls = []
+
+        def run(cmd, **_):
+            self.calls.append(cmd)
+            ok = lock_ok and cmd[-1].startswith("exposure_dynamic_framerate")
+            return types.SimpleNamespace(returncode=0 if ok else 1)
+
+        for name, value in (("_linux", lambda: True), ("SYSFS_V4L", root)):
+            p = mock.patch.object(cam, name, value)
+            p.start(); self.addCleanup(p.stop)
+        real_lock = self.real_lock = cam.lock_frame_rate
+        p = mock.patch.object(cam, "lock_frame_rate",
+                              lambda dev: real_lock(dev, run=run))
+        p.start(); self.addCleanup(p.stop)
+        return cam, cv2, pc
+
+    def test_pi5_camera_nodes_are_skipped(self):
+        cam, _, _ = self.load()
+        self.assertEqual(cam.usb_video_nodes(), [8])
+
+    def test_opens_the_usb_camera_not_video0(self):
+        cam, cv2, _ = self.load()
+        cap = cam.open_camera()
+        self.assertEqual((cap.index, cap.api), (8, cv2.CAP_V4L2))
+
+    def test_asks_for_mjpeg_640x480_at_30fps(self):
+        cam, cv2, _ = self.load()
+        cap = cam.open_camera()
+        self.assertEqual(cam.fourcc_text(cap), "MJPG")
+        self.assertEqual(cap.props[cv2.CAP_PROP_FRAME_WIDTH], 640)
+        self.assertEqual(cap.props[cv2.CAP_PROP_FRAME_HEIGHT], 480)
+        self.assertEqual(cap.props[cv2.CAP_PROP_FPS], 30)
+
+    def test_frame_rate_is_locked(self):
+        cam, _, _ = self.load()
+        cam.open_camera()
+        self.assertEqual(self.calls[0], ["v4l2-ctl", "-d", "/dev/video8", "-c",
+                                         "exposure_dynamic_framerate=0"])
+        self.assertEqual(cam.last_usb["locked"], "exposure_dynamic_framerate")
+
+    def test_older_control_name_is_tried_and_failure_is_reported(self):
+        cam, _, _ = self.load(lock_ok=False)
+        cam.open_camera()
+        self.assertEqual([c[-1] for c in self.calls],
+                         ["exposure_dynamic_framerate=0", "exposure_auto_priority=0"])
+        self.assertIsNone(cam.last_usb["locked"])
+
+    def test_missing_v4l2_ctl_is_not_fatal(self):
+        cam, _, _ = self.load()
+
+        def missing(*a, **k):
+            raise FileNotFoundError("v4l2-ctl")
+        self.assertIsNone(self.real_lock(8, run=missing))
+
+    def test_index_picks_among_usb_cameras(self):
+        nodes = dict(PI5_WITH_WEBCAM)
+        nodes[10] = ("/sys/devices/platform/axi/xhci-hcd.1/usb3/3-1/3-1:1.0", 0)
+        cam, _, _ = self.load(nodes=nodes)
+        self.assertEqual(cam.open_camera(index=1).index, 10)
+
+    def test_no_usb_camera_falls_back_to_the_index(self):
+        cam, _, _ = self.load(nodes={0: ("/sys/devices/platform/rp1-cfe", 0)})
+        self.assertEqual(cam.open_camera().index, 0)
 
 
 class TestRibbonCamera(CameraTest):

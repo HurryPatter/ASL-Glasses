@@ -29,10 +29,12 @@ sudo apt-get update
 # python3-picamera2/rpicam-apps: the ribbon (CSI) camera. Picamera2 is only
 #   distributed through apt -- it binds to the system's libcamera -- so it
 #   cannot be pip-installed into the venv; the venv is made able to see it.
+# v4l-utils: v4l2-ctl, which camera.py uses to stop a USB camera dropping to
+#   15fps in dim light, and to list what formats a camera offers.
 sudo apt-get install -y python3-venv python3-pip git \
     libgl1 libglib2.0-0 libegl1 libgles2 \
     espeak-ng alsa-utils \
-    python3-picamera2 rpicam-apps
+    python3-picamera2 rpicam-apps v4l-utils
 
 say "Python environment (.venv)"
 # Pi OS refuses system-wide pip ("externally-managed-environment"), so a venv
