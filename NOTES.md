@@ -333,6 +333,22 @@ orientation override, no retraining needed — and deliberately **not**
 implemented: it is not worth the added runtime complexity on one miss. Revisit
 only if G→Q recurs across more runs.
 
+### FIXED: spelling correction deleted one-letter words
+
+SymSpell's `word_segmentation` at its normal edit distance treats deleting a
+letter as a cheap correction, so "I" and "a" disappeared: IAMOMAR read
+"Am Omar", ILOVEYOU "Love You", ABAG "Bag". It also misread a missed double
+letter, the debouncer's most likely slip (HELO read "Help"), and turned
+random letters into words (XQZ read "xxx").
+
+`nlp_bridge.correct()` now splits at edit distance 0 first (every letter
+kept), then repairs only pieces that are not words: a doubled letter first,
+using the neighbouring words too since HELO splits as "hel o"; then ordinary
+correction, accepted only for small changes and never on a lone stray
+letter. About 1ms for a 36-letter sentence, and still cached per commit.
+Remaining blind spot: a wrong letter that happens to spell a real word
+(GODMORNING reads "God morning") cannot be caught without a language model.
+
 ### FIXED: `audio.py` was Windows-only and spliced text into a command
 
 It shelled out to PowerShell with `f'$s.Speak("{text}")'`. That could not run on
@@ -514,10 +530,11 @@ make the chapter:
    tilt the camera down, and run `evaluate.py` with the current model,
    condition `firstperson_cap`. That is measurement 1 above.
 2. Order the USB cameras, amplifier, speaker, display and power bank.
-3. Software: USB camera locked at 30fps; a `view` column in the dataset
-   (`front` / `firstperson`) so training and evaluation can split or mix
-   views; auto-start without a window; speaking without a keyboard; the
-   feedback display.
+3. ~~Software~~ **done**, except the feedback display (waits for the
+   hardware): USB camera found in sysfs and locked at 30fps; `view` column
+   in both data files with `train_classifier.py --train-view/--test-view`;
+   `main.py --headless` speaking when the hands are lowered, with an
+   optional button; `install_service.sh` for power-on start.
 4. First wearable mount (a printed frame or a temporary one), fixed.
 5. Collect first-person data with that mount: ~100 rows per label per
    person, as many signers as possible. Retrain; LOPO; retune J/Z.
@@ -539,16 +556,23 @@ people outside the team needs ethics approval; who takes CAD and hardware.
   signers and six setups. On the Pi 5: **75/78 (96.2%)** across three signers.
 - Remote access to the Pi works through Raspberry Pi Connect and SSH; see
   the README.
+- Glasses software ready ahead of the hardware: headless mode, speak by
+  lowering the hands, USB camera support, first-person data column and
+  training options, start at power-on. Not yet run on the Pi.
 
 ## Next steps
 
 1. **First-person feasibility test** (Road to the glasses, step 1) — the
-   single most informative thing to do next.
+   single most informative thing to do next. Run it with
+   `evaluate.py --view firstperson`.
 2. Order the glasses hardware (two USB camera candidates first).
-3. Pi camera colour/brightness — the comparison in the open issue above,
+3. On the Pi: `git pull`, `bash setup_pi.sh` (adds v4l-utils), then try
+   `python main.py --headless` and `bash install_service.sh`.
+4. Feedback display for the wearer, once the part is chosen.
+5. Pi camera colour/brightness — the comparison in the open issue above,
    less urgent now that the ribbon camera is not the final camera.
-4. `bench_pi.py` with a hand in view, for the latency figure.
-5. Instrument and fix the Z window — Z is still the miss that recurs, on both
+6. `bench_pi.py` with a hand in view, for the latency figure.
+7. Instrument and fix the Z window — Z is still the miss that recurs, on both
    devices; do it on first-person data once there is some.
-6. Merge `pi5` into `main`.
-7. Update the thesis slides and the hardware memo.
+8. Merge `pi5` into `main`.
+9. Update the thesis slides and the hardware memo.

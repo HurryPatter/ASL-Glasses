@@ -55,11 +55,45 @@ on Linux/macOS everything else works, but speech output will not.
 
 | Command | What it does | Keys |
 | --- | --- | --- |
-| `python main.py` | Live translation | `q` quit · `r` reset sentence · `s` speak · `d` motion debug readout |
-| `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv` | `[` / `]` change label · `SPACE` record · `q` save & quit |
-| `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib` + `landmark_labels.json` | `--quick` skips the report |
-| `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing and under what condition → appends to `eval_results.csv`. `--width/--height/--fps` emulate slower hardware | `SPACE` start 4s capture · `n` skip · `q` quit |
-| `python hw_report.py` | Summarise `eval_results.csv` by device and hardware profile | — |
+| `python main.py` | Live translation with a preview window | `q` quit · `r` reset · `s` speak (and clear) · `d` motion debug readout |
+| `python main.py --headless` | The glasses: no window. **Lower your hands for 1.5s to speak** (`--pause-ms`); `--button-pin N` adds a push button (short press speaks, long press discards); `--model` picks a classifier | — |
+| `python collect_data.py` | Record labeled landmark data → appends to `landmark_data.csv`. Asks who is signing and the camera view (`--view front` / `firstperson`) | `[` / `]` change label · `SPACE` record · `q` save & quit |
+| `python train_classifier.py` | Train the MLP, reporting cross-person accuracy → `landmark_model.joblib`. `--train-view` / `--test-view` / `--seeds` / `--out`, see below | `--quick` skips the report |
+| `python evaluate.py` | Accuracy benchmark against known target letters; asks who is signing, the condition and the view → appends to `eval_results.csv`. `--model`, and `--width/--height/--fps` to emulate slower hardware | `SPACE` start 4s capture · `x` void · `n` skip · `q` quit |
+| `python hw_report.py` | Summarise `eval_results.csv` by device, view and hardware profile | — |
+| `bash install_service.sh` | On the Pi: start `main.py --headless` at every boot | — |
+
+**Spelling correction keeps every letter you sign.** The letters are first split
+into words without changing any, so `IAMOMAR` reads "I am Omar" (it used to read
+"Am Omar": the corrector deleted one-letter words). Pieces that are not words get
+a doubled letter tried first, since a double letter needs the hand dropped
+between the two and is the most likely slip (`HELO` → "Hello"), then ordinary
+correction, but only for small changes; random letters are left as signed.
+
+### Front view and first-person view
+
+Every row in `landmark_data.csv` and `eval_results.csv` records where the camera
+was: `front` (facing the signer, all data before the glasses) or `firstperson`
+(on the signer's head, looking down at their own hands). They are different
+inputs to the model, so the glasses chapter compares them:
+
+```bash
+# 1. how much transfers: front-view model, tested on first-person signing
+python train_classifier.py --train-view front --test-view firstperson --seeds 0,42,123
+# 2. first-person only
+python train_classifier.py --train-view firstperson --test-view firstperson --seeds 0,42,123
+# 3. both views together, tested on first-person
+python train_classifier.py --train-view all --test-view firstperson --seeds 0,42,123
+# ship a first-person model beside the front-view one, and use it
+python train_classifier.py --train-view firstperson --quick --out landmark_model_firstperson.joblib
+python main.py --headless --model landmark_model_firstperson.joblib
+```
+
+The held-out signer is excluded from training in both views. The headline is the
+average over signers, seed-averaged: `--seeds 0,42,123` on the current data
+reproduces the table below exactly. **Collect first-person data only with the
+camera mounted where it will be on the glasses**: its position and tilt are part
+of what the model learns.
 
 `collect_data.py` asks who is signing and **appends** (never overwrites), so data
 from multiple people accumulates.
@@ -296,6 +330,13 @@ Both kinds work, through `camera.py`. A **ribbon (CSI) camera** is used if one
 is attached, otherwise a **USB webcam**; force either with `ASL_CAMERA=csi` or
 `ASL_CAMERA=usb`. Check with `python camera.py`.
 
+**USB cameras (the glasses' camera).** On a Pi 5 a USB camera is not
+`/dev/video0` (those first nodes belong to the Pi's own camera hardware), so
+`camera.py` finds it in sysfs. It asks for 640x480 MJPEG at 30fps and switches
+off the camera's habit of dropping to 15fps in dim light, using `v4l2-ctl`
+(installed by `setup_pi.sh`). `python camera.py` shows which device it opened and
+whether the lock worked; `v4l2-ctl --list-formats-ext` lists what a camera offers.
+
 A ribbon camera cannot go through `cv2.VideoCapture`: Pi OS drives it with
 libcamera, and on a Pi 5 `/dev/video0` is the raw sensor front end. It goes
 through Picamera2 instead, fixed at 30fps so the camera cannot slow itself
@@ -336,7 +377,21 @@ which does support it.
 
 `main.py`, `collect_data.py` and `evaluate.py` open a preview window, so they
 need the desktop: a monitor, or Screen Sharing in Raspberry Pi Connect.
-`bench_pi.py`, `audio.py` and `camera.py` do not.
+`main.py --headless`, `bench_pi.py`, `audio.py` and `camera.py` do not.
+
+### Starting at power-on (the glasses)
+
+```bash
+bash install_service.sh                      # or: --button-pin 17, --model ...
+journalctl --user -u asl-glasses -f          # watch what it prints
+systemctl --user stop asl-glasses            # free the camera for evaluate.py etc.
+bash install_service.sh --uninstall
+```
+
+It runs `main.py --headless` as a systemd user service, restarts it if it
+crashes, and says "Ready" when it starts. **While it runs it holds the camera**:
+stop it before `evaluate.py`, `collect_data.py`, `bench_pi.py` or a windowed
+`main.py`, and restart it after a `git pull`.
 
 ### Working remotely (no monitor)
 
@@ -433,7 +488,9 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 
 | File | Role |
 | --- | --- |
-| `main.py` | Live pipeline |
+| `main.py` | Live pipeline; `--headless` for the glasses |
+| `speech_trigger.py` | Speak when the hands are lowered (no keyboard on the glasses) |
+| `install_service.sh` | Start `main.py --headless` at power-on (systemd user service) |
 | `collect_data.py` | Labeled landmark data collection |
 | `train_classifier.py` | MLP training + per-class metrics |
 | `evaluate.py` | End-to-end accuracy benchmark |
@@ -454,11 +511,12 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `features.py` | The hand-frame normalization every model is trained and run on |
 | `test_features.py` | Normalization invariances; one shared definition |
 | `test_nlp_bridge.py` | Spell-correction tests |
+| `test_speech_trigger.py` | Speak-on-pause timing tests |
 | `test_hwprofile.py` | Frame limiter, device detection, results migration |
-| `dataset.py` | Dataset schema + person grouping (stdlib only) |
+| `dataset.py` | Dataset schema (person, view), grouping, migration (stdlib only) |
 | `backfill_person.py` | One-off: adds `person` to pre-existing rows |
 | `landmark_data.csv` | Training data (30,807 rows, 27 classes, 5 signers) |
-| `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order |
+| `landmark_model.joblib` / `landmark_labels.json` | Trained model + label order (newer models carry their labels inside) |
 | `eval_results.csv` | Accumulated evaluation log |
 | `hand_landmarker.task` | MediaPipe hand landmarker model |
 
