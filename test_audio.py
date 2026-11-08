@@ -143,11 +143,12 @@ class TestTextIsDataNotCode(Base):
 
 class TestBehaviour(Base):
 
-    def test_same_text_twice_speaks_once(self):
+    def test_same_text_twice_speaks_twice(self):
+        # Speaking clears the text, so a repeat is a new phrase ("yes ... yes").
         a = audio.AudioOutput(backend="espeak")
-        self.assertTrue(a.speak("hello"))
-        self.assertFalse(a.speak("hello"))
-        self.assertEqual(len(FakePopen.instances), 1)
+        self.assertTrue(a.speak("yes"))
+        self.assertTrue(a.speak("yes"))
+        self.assertEqual(len(FakePopen.instances), 2)
 
     def test_empty_or_blank_is_ignored(self):
         a = audio.AudioOutput(backend="espeak")

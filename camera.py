@@ -199,6 +199,8 @@ def open_camera(width=None, height=None, fps=30, index=0, source=None):
 
 def fourcc_text(cap):
     code = int(cap.get(cv2.CAP_PROP_FOURCC))
+    if code <= 0:                       # not opened, or the backend cannot say
+        return "?"
     return "".join(chr((code >> 8 * i) & 0xFF) for i in range(4)).strip("\x00") or "?"
 
 

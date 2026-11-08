@@ -73,11 +73,12 @@ class AudioOutput:
     def speak(self, text):
         """Start speaking `text` and return immediately.
 
-        Returns True if speech was started, False if skipped (empty, or the
-        same text as last time -- main.py re-speaks on every S press).
+        Returns True if speech was started, False if there was nothing to say.
+        The same text twice is spoken twice: main.py clears the text once it
+        is spoken, so a repeat is the signer saying it again ("yes ... yes").
         """
         text = (text or "").strip()
-        if not text or text == self.last_spoken:
+        if not text:
             return False
         self.last_spoken = text
         self.stop()
