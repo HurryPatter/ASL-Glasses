@@ -14,6 +14,7 @@ from nlp_bridge import NLPBridge
 from audio import AudioOutput
 from motion import MotionDetector
 import camera
+from features import normalize_landmarks
 
 # ── Constants ──────────────────────────────────────────────────────────────
 LANDMARKER_PATH = "hand_landmarker.task"
@@ -48,25 +49,6 @@ nlp = NLPBridge(mode="academic")
 audio = AudioOutput()
 recent_guesses = deque(maxlen=DISPLAY_SMOOTHING_N)  # display-only, never fed to the debouncer
 show_debug = False           # D toggles the motion-detector readout
-
-
-# ── Landmark normalization (must match collect_data.py exactly) ────────────
-def normalize_landmarks(landmarks, frame_w, frame_h):
-    """Hand frame: origin at wrist, unit = wrist->middle-knuckle, thumb on +x."""
-    pts = np.array([[lm.x, lm.y] for lm in landmarks], dtype=float)
-    pts[:, 0] *= frame_w
-    pts[:, 1] *= frame_h
-
-    v = pts[9] - pts[0]
-    size = np.linalg.norm(v) or 1e-6
-    y_hat = v / size
-    x_hat = np.array([y_hat[1], -y_hat[0]])
-    local = ((pts - pts[0]) @ np.stack([x_hat, y_hat], axis=1)) / size
-
-    if local[2][0] < 0:
-        local[:, 0] *= -1
-
-    return local.flatten()
 
 
 def smoothed_display_letter():

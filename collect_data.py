@@ -35,14 +35,13 @@ Controls:
 import cv2
 import csv
 import os
-import math
 import sys
-import numpy as np
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
 
 import camera
+from features import normalize_landmarks
 import dataset
 
 ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
@@ -73,27 +72,6 @@ CAPTURE_EVERY_N_FRAMES = 2  # avoid logging near-duplicate consecutive frames
 # survive. So a take should tilt the hand and vary finger curl; waving it around
 # the frame contributes literally nothing.
 SUGGESTED_ROWS_PER_LABEL = 100
-
-
-def normalize_landmarks(landmarks, frame_w, frame_h):
-    """Convert 21 MediaPipe landmarks into the scale/rotation-invariant hand frame.
-
-    Returns a flat list of 42 floats: [p0_x, p0_y, p1_x, p1_y, ..., p20_x, p20_y]
-    """
-    pts = np.array([[lm.x, lm.y] for lm in landmarks], dtype=float)
-    pts[:, 0] *= frame_w
-    pts[:, 1] *= frame_h
-
-    v = pts[9] - pts[0]  # wrist -> middle knuckle
-    size = np.linalg.norm(v) or 1e-6
-    y_hat = v / size
-    x_hat = np.array([y_hat[1], -y_hat[0]])
-    local = ((pts - pts[0]) @ np.stack([x_hat, y_hat], axis=1)) / size
-
-    if local[2][0] < 0:  # thumb knuckle landed on -x: mirror so thumb is on +x
-        local[:, 0] *= -1
-
-    return local.flatten().tolist()
 
 
 def ask_person():
@@ -182,7 +160,8 @@ def main():
             if recording:
                 frame_count += 1
                 if frame_count % CAPTURE_EVERY_N_FRAMES == 0:
-                    row = [current_letter, person] + normalize_landmarks(landmarks, w, h)
+                    row = ([current_letter, person]
+                           + normalize_landmarks(landmarks, w, h).tolist())
                     writer.writerow(row)
                     saved_counts[current_letter] += 1
         else:

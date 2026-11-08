@@ -34,9 +34,10 @@ unit scale = wrist→middle-knuckle distance, rotated so the thumb lands on +x
 (21 landmarks × x,y). This makes the classifier invariant to hand position,
 scale and in-plane rotation.
 
-> **Keep this consistent.** The same normalization appears in `collect_data.py`,
-> `main.py` and `evaluate.py`. Changing it in one place without the others makes
-> the trained model and live inference disagree silently.
+> **One definition, in `features.py`.** `collect_data.py` (which writes the
+> training rows), `main.py` and `evaluate.py` all import it. It used to be copied
+> into each, where changing one copy would have made the model and live inference
+> disagree silently; `test_features.py` checks it stays imported, not copied.
 
 ## Setup
 
@@ -450,6 +451,8 @@ recorded in `eval_results.csv` through both the old and the new implementation.
 | `test_motion.py` | Offline motion-rule tests (synthetic landmarks) |
 | `test_audio.py` | Offline speech tests (no speaker needed) |
 | `test_camera.py` | Offline camera-selection tests (no camera needed) |
+| `features.py` | The hand-frame normalization every model is trained and run on |
+| `test_features.py` | Normalization invariances; one shared definition |
 | `test_nlp_bridge.py` | Spell-correction tests |
 | `test_hwprofile.py` | Frame limiter, device detection, results migration |
 | `dataset.py` | Dataset schema + person grouping (stdlib only) |

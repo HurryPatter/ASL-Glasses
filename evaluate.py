@@ -33,6 +33,7 @@ from mediapipe.tasks.python import vision as mp_vision
 import argparse
 
 import camera
+from features import normalize_landmarks
 import hwprofile
 from debouncer import Debouncer
 from motion import MotionDetector
@@ -45,20 +46,6 @@ CAPTURE_WINDOW_S = 4.0          # how long you get per letter before it auto-adv
 RESULTS_PATH = "eval_results.csv"
 
 TARGET_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"  # includes J/Z, unlike collect_data.py
-
-
-def normalize_landmarks(landmarks, frame_w, frame_h):
-    pts = np.array([[lm.x, lm.y] for lm in landmarks], dtype=float)
-    pts[:, 0] *= frame_w
-    pts[:, 1] *= frame_h
-    v = pts[9] - pts[0]
-    size = np.linalg.norm(v) or 1e-6
-    y_hat = v / size
-    x_hat = np.array([y_hat[1], -y_hat[0]])
-    local = ((pts - pts[0]) @ np.stack([x_hat, y_hat], axis=1)) / size
-    if local[2][0] < 0:
-        local[:, 0] *= -1
-    return local.flatten()
 
 
 def ask(prompt, default):

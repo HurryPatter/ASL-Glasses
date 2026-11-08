@@ -5,8 +5,8 @@
 # debouncer committing a letter twice), never recognition accuracy. Accuracy
 # still comes from running evaluate.py by hand.
 #
-# Only symspellpy is installed -- not MediaPipe or scikit-learn -- so the job
-# still finishes in seconds and needs no camera or trained model.
+# Only symspellpy and numpy are installed -- not MediaPipe or scikit-learn --
+# so the job still finishes in seconds and needs no camera or trained model.
 name: tests
 
 on: [push, pull_request]
@@ -21,11 +21,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      # The one dependency the tests need: nlp_bridge.py's tests guard the
-      # pkg_resources crash and the per-frame correction cache. Pinned to match
+      # nlp_bridge.py's tests need symspellpy; features.py's (the hand-frame
+      # normalization every model depends on) need numpy. Pinned to match
       # requirements.txt. Everything else stays standard-library only.
       - name: Install test dependencies
-        run: pip install symspellpy==6.10.0
+        run: pip install symspellpy==6.10.0 numpy==2.4.6
 
       - name: Run offline tests
         run: python -m unittest discover -p "test_*.py" -v
