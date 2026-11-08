@@ -56,13 +56,104 @@ class NLPBridge:
                 self.sym_spell.create_dictionary_entry(word, 10**9)
 
     def correct(self, raw_string):
-        """Takes a fingerspelled letter string, returns corrected sentence.
+        """Takes a fingerspelled letter string, returns corrected text.
         Only ever called on runs of single-character labels -- see
-        correct_sequence() for input containing word-sign tokens too."""
+        correct_sequence() for input containing word-sign tokens too.
+
+        Three steps, cheapest and safest first:
+
+        1. Split into words WITHOUT changing a letter. SymSpell's segmentation
+           with its normal edit distance treats deleting a letter as a cheap
+           correction, so it used to drop the one-letter words: IAMOMAR came
+           out "Am Omar", ILOVEYOU "Love You", ABAG "Bag". At edit distance 0
+           those read "I am Omar", "I love you", "A bag".
+        2. Pieces that are not words get a doubled letter tried first. The
+           debouncer commits one letter per hold, so the second L of HELLO
+           only appears if the signer drops the hand and signs it again: a
+           missed double letter is the most likely slip, and plain spelling
+           correction gets it wrong (HELO came out "Help").
+        3. Otherwise ordinary correction, accepted only when the change is
+           small for the length of the piece, so that random letters are left
+           as signed rather than turned into an unrelated word (XQZ -> "xxx").
+        """
         if not raw_string:
             return ""
-        results = self.sym_spell.word_segmentation(raw_string)
-        return results.corrected_string
+        tokens = self.sym_spell.word_segmentation(
+            raw_string.lower(), max_edit_distance=0).corrected_string.split()
+        known = [self._is_word(t) for t in tokens]
+
+        words = []
+        last_is_free = False    # words[-1] is a plain known word we may absorb
+        i = 0
+        while i < len(tokens):
+            if known[i]:
+                words.append(tokens[i])
+                last_is_free = True
+                i += 1
+                continue
+            j = i
+            while j < len(tokens) and not known[j]:
+                j += 1
+            # A missed double letter often splits into a word plus debris
+            # ("hel o" for HELO), so the doubled-letter repair also gets to
+            # use the known words on either side of the unknown run.
+            before = [words.pop()] if last_is_free else []
+            after = [tokens[j]] if j < len(tokens) else []
+            fixed = self._doubled("".join(before + tokens[i:j] + after))
+            if fixed:
+                words.extend(fixed.split())
+                i = j + len(after)
+            else:
+                words.extend(before)
+                words.extend(self._corrected("".join(tokens[i:j])).split())
+                i = j
+            last_is_free = False
+        return self._format(words)
+
+    def _is_word(self, token):
+        # Every single letter is in the frequency dictionary; only these two
+        # are words on their own.
+        if len(token) == 1 and token not in ("i", "a"):
+            return False
+        return bool(self.sym_spell.lookup(token, Verbosity.TOP,
+                                          max_edit_distance=0))
+
+    def _all_words(self, text):
+        seg = self.sym_spell.word_segmentation(text, max_edit_distance=0)
+        tokens = seg.corrected_string.split()
+        if tokens and all(self._is_word(t) for t in tokens):
+            return seg.corrected_string
+        return None
+
+    def _doubled(self, span):
+        """The span with one letter doubled, if that makes it all words."""
+        for k in range(len(span)):
+            fixed = self._all_words(span[:k + 1] + span[k] + span[k + 1:])
+            if fixed:
+                return fixed
+        return None
+
+    def _corrected(self, span):
+        """Ordinary spelling correction, only when the change is small. A lone
+        stray letter is left alone: correcting one letter means replacing it,
+        which is a guess (CATX read "Cat a")."""
+        if len(span) < 2:
+            return span
+        seg = self.sym_spell.word_segmentation(span, max_edit_distance=2)
+        allowed = 1 if len(span) <= 4 else 2
+        if seg.corrected_string and seg.distance_sum <= allowed:
+            return seg.corrected_string
+        return span
+
+    @staticmethod
+    def _format(words):
+        """Sentence case, with I and the team's names capitalised."""
+        out = []
+        for i, w in enumerate(words):
+            if w == "i" or w in TEAM_NAMES or i == 0:
+                w = w[:1].upper() + w[1:]
+            out.append(w)
+        return " ".join(out)
 
     def correct_sequence(self, labels):
         """Takes the debouncer's ordered list of committed labels -- a mix

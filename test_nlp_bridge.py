@@ -103,5 +103,52 @@ class TestCorrectSequence(unittest.TestCase):
         self.assertEqual(calls["n"], 2)
 
 
+
+@unittest.skipUnless(HAVE_SYMSPELL, "symspellpy not installed")
+class TestFingerspellingCorrection(unittest.TestCase):
+    """What a signer actually produces: one letter per hold, no spaces."""
+
+    @classmethod
+    def setUpClass(cls):
+        from nlp_bridge import NLPBridge
+        cls.nlp = NLPBridge(mode="academic")
+
+    def check(self, signed, expected):
+        self.assertEqual(self.nlp.correct(signed), expected)
+
+    def test_one_letter_words_survive(self):
+        # Correction used to delete them: "Am Omar", "Love You", "Bag".
+        self.check("IAMOMAR", "I am Omar")
+        self.check("ILOVEYOU", "I love you")
+        self.check("ABAG", "A bag")
+        self.check("CANIGO", "Can I go")
+
+    def test_correctly_spelled_sentences_are_only_split(self):
+        self.check("MYNAMEISLAILA", "My name is Laila")
+        self.check("WHATISYOURNAME", "What is your name")
+        self.check("IWANTWATER", "I want water")
+
+    def test_missed_double_letter(self):
+        # The debouncer needs the hand dropped between the two Ls of HELLO,
+        # so a single L is the most likely slip. Plain correction read "Help".
+        self.check("HELO", "Hello")
+        self.check("APLE", "Apple")
+        self.check("HELOMYNAMEISOMAR", "Hello my name is Omar")
+
+    def test_small_slips_are_corrected(self):
+        self.check("HWLLO", "Hello")
+        self.check("THNAKYOU", "Thank you")
+        self.check("IAMHWNGRY", "I am hungry")
+
+    def test_noise_is_left_as_signed(self):
+        # A guess is worse than the letters: XQZ used to become "xxx", and a
+        # stray X after CAT became the word "a".
+        self.check("XQZ", "Xqz")
+        self.check("CATX", "Cat x")
+
+    def test_names_are_capitalised(self):
+        self.check("HAGAR", "Hagar")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
