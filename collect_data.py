@@ -12,7 +12,15 @@ J and Z are motion signs (handled separately, see motion.py on the trial
 branch) and are skipped here -- this collects the 24 static letters only.
 
 Output: landmark_data.csv, one row per captured frame:
-    label, person, p0_x, p0_y, ..., p20_x, p20_y   (2 + 42 columns)
+    label, person, view, p0_x, p0_y, ..., p20_x, p20_y   (3 + 42 columns)
+
+`view` is where the camera is: `front` (a camera facing the signer, which is
+every row collected before the glasses) or `firstperson` (the camera on the
+signer's head, looking down at their own hands). Pass --view, or answer the
+prompt. Collect first-person data only with the camera mounted where it will
+be on the glasses: its position and tilt are part of what the model learns.
+
+    python collect_data.py --view firstperson
 
 The `person` column is asked for at startup and matters more than the row
 count: a random train/test split over frames measures memorisation, because
@@ -32,10 +40,13 @@ Controls:
   SPACE   = start / stop recording for the current letter
   Q       = quit and save
 """
-import cv2
+import argparse
 import csv
 import os
 import sys
+import time
+
+import cv2
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
@@ -84,6 +95,16 @@ def ask_person():
         print("  Please enter a single name (letters/digits, no spaces).")
 
 
+def ask_view():
+    while True:
+        view = dataset.parse_view(input(
+            "Camera view? [f]ront (camera faces the signer) or "
+            "[g]lasses (camera on the signer's head): "))
+        if view:
+            return view
+        print("  Type f or g.")
+
+
 def open_output(person):
     """Append to landmark_data.csv, refusing to mix schemas."""
     if os.path.exists(OUT_PATH):
@@ -93,6 +114,11 @@ def open_output(person):
                 f"{OUT_PATH} predates the `person` column. Run "
                 f"`python backfill_person.py` first, then collect."
             )
+        if header == dataset.PRE_VIEW_HEADER:
+            n = dataset.add_view_column(OUT_PATH)
+            print(f"Added the `view` column to {OUT_PATH}: its {n} existing rows "
+                  f"are marked `front`.")
+            header = dataset.HEADER
         if header != dataset.HEADER:
             sys.exit(f"{OUT_PATH} has an unexpected header; not appending to it.")
         csv_file = open(OUT_PATH, "a", newline="")
@@ -105,7 +131,12 @@ def open_output(person):
 
 
 def main():
+    p = argparse.ArgumentParser(description="Record labelled hand landmarks.")
+    p.add_argument("--view", choices=dataset.VIEWS,
+                   help="where the camera is (asked if not given)")
+    args = p.parse_args()
     person = ask_person()
+    view = args.view or ask_view()
     base_options = mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH)
     options = mp_vision.HandLandmarkerOptions(
         base_options=base_options,
@@ -118,7 +149,10 @@ def main():
     landmarker = mp_vision.HandLandmarker.create_from_options(options)
 
     cap = camera.open_camera()   # ribbon camera if attached, else USB webcam
-    frame_timestamp_ms = 0
+    # Real elapsed time, as in main.py: MediaPipe's tracker smooths across
+    # frames using these timestamps, and a fixed 33ms step tells it the camera
+    # runs at exactly 30fps whatever it actually does.
+    start_time = time.monotonic()
 
     csv_file, writer = open_output(person)
 
@@ -127,7 +161,7 @@ def main():
     frame_count = 0
     saved_counts = {L: 0 for L in LABELS}
 
-    print(f"Data collection ready -- signing as '{person}'.")
+    print(f"Data collection ready -- signing as '{person}', view '{view}'.")
     print("[ / ] = prev/next letter | SPACE = start/stop recording | Q = quit")
     print(f"Aim for ~{SUGGESTED_ROWS_PER_LABEL} rows per label, then stop.")
     print("While recording, vary what the FEATURES can see:")
@@ -145,7 +179,7 @@ def main():
 
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
                              data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        frame_timestamp_ms += 33
+        frame_timestamp_ms = int((time.monotonic() - start_time) * 1000)
         result = landmarker.detect_for_video(mp_image, frame_timestamp_ms)
 
         current_letter = LABELS[letter_idx]
@@ -160,7 +194,7 @@ def main():
             if recording:
                 frame_count += 1
                 if frame_count % CAPTURE_EVERY_N_FRAMES == 0:
-                    row = ([current_letter, person]
+                    row = ([current_letter, person, view]
                            + normalize_landmarks(landmarks, w, h).tolist())
                     writer.writerow(row)
                     saved_counts[current_letter] += 1
@@ -173,7 +207,7 @@ def main():
         cv2.putText(frame, f"{current_letter}  ({saved}/{SUGGESTED_ROWS_PER_LABEL}{enough})",
                     (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
                     (0, 255, 255) if enough else status_color, 2)
-        cv2.putText(frame, f"signer: {person}", (10, 115),
+        cv2.putText(frame, f"signer: {person}   view: {view}", (10, 115),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         cv2.putText(frame, "REC" if recording else "PAUSED",
                     (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.8, status_color, 2)
@@ -198,7 +232,7 @@ def main():
     landmarker.close()
     cap.release()
     cv2.destroyAllWindows()
-    print(f"Saved to {OUT_PATH} as '{person}'")
+    print(f"Saved to {OUT_PATH} as '{person}' ({view})")
     recorded = {k: v for k, v in saved_counts.items() if v}
     print("Per-label counts:", recorded)
     missing = [l for l in LABELS if not saved_counts[l]]

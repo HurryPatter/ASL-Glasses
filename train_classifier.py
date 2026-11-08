@@ -21,7 +21,30 @@ Output: landmark_model.joblib -- trained scikit-learn model
 
     python train_classifier.py            # cross-person report, then train
     python train_classifier.py --quick    # skip the report, just train
+
+Views (see dataset.py): every row says whether the camera faced the signer
+(`front`) or sat on their head (`firstperson`). --train-view and --test-view
+choose which rows train and which are tested, so the glasses chapter's three
+measurements are one command each:
+
+    # 1. transfer: front-view model, tested on first-person signing
+    python train_classifier.py --train-view front --test-view firstperson
+    # 2. first-person only
+    python train_classifier.py --train-view firstperson --test-view firstperson
+    # 3. both views together, tested on first-person
+    python train_classifier.py --train-view all --test-view firstperson
+
+The held-out person is removed from training in BOTH views, so no fold ever
+trains on the signer it tests. --seeds 0,42,123 averages each fold over
+several training seeds: one seed moved a fold by up to 5.4 points, so quote
+the averaged figure. The shipped model trains on --train-view; --out names
+it, so a first-person model can sit beside the front-view one:
+
+    python train_classifier.py --train-view firstperson --quick \
+        --out landmark_model_firstperson.joblib
+    python main.py --model landmark_model_firstperson.joblib
 """
+import argparse
 import json
 import sys
 
@@ -39,7 +62,7 @@ MODEL_OUT = "landmark_model.joblib"
 LABELS_OUT = "landmark_labels.json"
 
 
-def build_model():
+def build_model(seed=42):
     return MLPClassifier(
         hidden_layer_sizes=(64, 32),
         activation="relu",
@@ -47,7 +70,7 @@ def build_model():
         validation_fraction=0.1,
         n_iter_no_change=15,
         max_iter=500,
-        random_state=42,
+        random_state=seed,
     )
 
 
@@ -56,73 +79,108 @@ def load():
     if "person" not in df.columns:
         sys.exit(f"{DATA_PATH} has no `person` column. Run "
                  f"`python backfill_person.py` first.")
+    if "view" not in df.columns:      # collected before the glasses: all front
+        df["view"] = dataset.FRONT
     # Select features explicitly rather than dropping known columns, so a new
     # metadata column can never silently become a 43rd input feature.
     X = df[dataset.LANDMARK_COLUMNS].values.astype("float32")
     labels = sorted(df["label"].unique())
     y = df["label"].map({l: i for i, l in enumerate(labels)}).values
     groups = df["person"].values
-    return df, X, y, groups, labels
+    views = df["view"].values
+    return df, X, y, groups, labels, views
 
 
-def cross_person_report(X, y, groups, labels):
+def view_mask(views, which):
+    return np.ones(len(views), bool) if which == "all" else views == which
+
+
+def cross_person_report(X, y, groups, labels, views=None,
+                        train_view="all", test_view="all", seeds=(42,)):
     """Leave-one-person-out: train on everyone else, test on the held-out signer.
 
     Rows whose person is `unknown` (the word signs, recorded by all three
     signers in one sitting with no boundary in the file marking who is who)
     are used for training on every fold and never tested on. Assigning them to
     a name we cannot verify would corrupt exactly the grouping this measures.
+
+    Training rows come from train_view, test rows from test_view; the held-out
+    person is excluded from training in every view. A test row whose label
+    the fold's training set lacks cannot be scored fairly -- it is absent
+    from training, not misread -- so it is left out of the headline and
+    listed. With seeds, each fold is trained once per seed and the
+    predictions pooled, so the reported accuracy is the seed average.
     """
+    views = np.full(len(y), dataset.FRONT) if views is None else views
     unknown = groups == dataset.UNKNOWN_PERSON
-    people = sorted(set(groups[~unknown]))
-    if len(people) < 2:
-        print("Only one person in the dataset -- cross-person accuracy cannot be "
-              "measured. Collect from someone else before quoting any number.")
-        return
+    trainable = view_mask(views, train_view)
+    testable = view_mask(views, test_view) & ~unknown
+    people = sorted(set(groups[testable]))
 
-    # A label only one person ever signed cannot be tested cross-person: on the
-    # fold holding that person out it is absent from training entirely, so it
-    # would score 0 and drag the headline down for the wrong reason.
-    per_label_people = {l: set() for l in labels}
-    for label_idx, person in zip(y[~unknown], groups[~unknown]):
-        per_label_people[labels[label_idx]].add(person)
-    single = sorted(l for l, ps in per_label_people.items() if len(ps) < 2)
-
-    print(f"\n{'='*66}\nCROSS-PERSON ACCURACY (leave-one-person-out)\n{'='*66}")
-    print(f"people: {', '.join(people)}")
-    if unknown.any():
-        unknown_labels = sorted({labels[i] for i in y[unknown]})
-        print(f"\n  {int(unknown.sum())} rows have no known signer "
+    title = "CROSS-PERSON ACCURACY (leave-one-person-out)"
+    if (train_view, test_view) != ("all", "all"):
+        title += f"\ntrain view: {train_view}   test view: {test_view}"
+    print(f"\n{'='*66}\n{title}\n{'='*66}")
+    if not people:
+        print(f"No rows with a known signer in view '{test_view}'.")
+        return None
+    others = sorted(set(groups[trainable & ~unknown]))
+    if len(set(others) | set(people)) < 2:
+        print("Only one person -- cross-person accuracy cannot be measured. "
+              "Collect from someone else before quoting any number.")
+        return None
+    print(f"tested people: {', '.join(people)}")
+    if (trainable & unknown).any():
+        unknown_labels = sorted({labels[i] for i in y[trainable & unknown]})
+        print(f"\n  {int((trainable & unknown).sum())} rows have no known signer "
               f"({', '.join(unknown_labels)}): trained on in every fold, never "
               f"tested on.")
-    if single:
-        print(f"\n  NOT VALIDATED -- no two known signers: {', '.join(single)}")
-        print("  Excluded from the headline number. Re-collect these with the")
-        print("  signer recorded, so they can be validated across people.")
+    if len(seeds) > 1:
+        print(f"  averaged over seeds {', '.join(map(str, seeds))}")
 
-    testable = np.array([labels[i] not in single for i in y])
-    y_true_all, y_pred_all, keep_all = [], [], []
+    y_true_all, y_pred_all = [], []
+    per_person = []
+    untrainable = {}
+    for held in people:
+        train_idx = np.where(trainable & (groups != held))[0]
+        test_idx = np.where(testable & (groups == held))[0]
+        present = set(y[train_idx])
+        keep = np.array([label in present for label in y[test_idx]])
+        for label in set(y[test_idx][~keep]):
+            untrainable.setdefault(labels[label], []).append(held)
+        test_idx = test_idx[keep]
+        if not len(test_idx):
+            continue
+        accs = []
+        for seed in seeds:
+            model = build_model(seed)
+            model.fit(X[train_idx], y[train_idx])
+            pred = model.predict(X[test_idx])
+            accs.append((pred == y[test_idx]).mean())
+            y_true_all.append(y[test_idx]); y_pred_all.append(pred)
+        per_person.append(np.mean(accs))
+        spread = f"  (seeds {min(accs):.3f}-{max(accs):.3f})" if len(seeds) > 1 else ""
+        print(f"  held out {held:10} -> {np.mean(accs):.3f}  "
+              f"({len(test_idx)} rows){spread}")
 
-    known_idx = np.where(~unknown)[0]
-    unknown_idx = np.where(unknown)[0]
-    for tr, te in LeaveOneGroupOut().split(known_idx, y[known_idx],
-                                           groups[known_idx]):
-        train_idx = np.concatenate([known_idx[tr], unknown_idx])
-        test_idx = known_idx[te]
-        held = groups[test_idx][0]
-        model = build_model()
-        model.fit(X[train_idx], y[train_idx])
-        pred = model.predict(X[test_idx])
-        keep = testable[test_idx]
-        acc = (pred[keep] == y[test_idx][keep]).mean()
-        print(f"  held out {held:10} -> {acc:.3f}  ({keep.sum()} rows)")
-        y_true_all.append(y[test_idx]); y_pred_all.append(pred); keep_all.append(keep)
+    if untrainable:
+        print("\n  NOT SCORED -- label missing from that fold's training set:")
+        for label, who in sorted(untrainable.items()):
+            print(f"    {label}: when holding out {', '.join(who)}")
+        print("  Collect these from a second signer (in the training view) so")
+        print("  they can be validated across people.")
+    if not y_true_all:
+        return None
 
     y_true = np.concatenate(y_true_all)
     y_pred = np.concatenate(y_pred_all)
-    keep = np.concatenate(keep_all)
-    print(f"\n  MEAN CROSS-PERSON ACCURACY: {(y_pred[keep] == y_true[keep]).mean():.3f}")
-    print("  (quote this one, not the in-sample number below)")
+    keep = np.ones(len(y_true), bool)
+    # The headline weights every signer equally, as the README's table does;
+    # pooling over rows would let whoever recorded the most rows dominate.
+    mean = float(np.mean(per_person))
+    print(f"\n  MEAN CROSS-PERSON ACCURACY: {mean:.3f}  (average over signers)")
+    print(f"  pooled over all test rows:  {(y_pred == y_true).mean():.3f}")
+    print("  (quote the first, not the in-sample number below)")
 
     print("\nPer-label, pooled across folds:")
     print(classification_report(y_true[keep], y_pred[keep],
@@ -136,37 +194,73 @@ def cross_person_report(X, y, groups, labels):
                   if i != j and cm[i][j] > 0]
     for count, true_l, pred_l in sorted(confusions, reverse=True)[:10]:
         print(f"  {true_l} -> {pred_l}: {count}")
+    return mean
+
+
+def parse_args(argv=None):
+    p = argparse.ArgumentParser(description="Train the landmark classifier.")
+    p.add_argument("--quick", action="store_true",
+                   help="skip the cross-person report, just train")
+    p.add_argument("--train-view", default="all", choices=("all",) + dataset.VIEWS,
+                   help="rows to train on (and to ship the model from)")
+    p.add_argument("--test-view", default="all", choices=("all",) + dataset.VIEWS,
+                   help="rows the cross-person report tests on")
+    p.add_argument("--seeds", default="42",
+                   help="comma-separated training seeds to average the report over")
+    p.add_argument("--out", default=MODEL_OUT,
+                   help=f"model file to write (default {MODEL_OUT})")
+    a = p.parse_args(argv)
+    try:
+        a.seeds = tuple(int(x) for x in a.seeds.split(","))
+    except ValueError:
+        p.error("--seeds must be integers separated by commas, e.g. 0,42,123")
+    return a
 
 
 def main():
-    quick = "--quick" in sys.argv
-    df, X, y, groups, labels = load()
+    args = parse_args()
+    df, X, y, groups, labels, views = load()
 
     print(f"Loaded {len(df)} rows, {len(labels)} labels, "
           f"{df['person'].nunique()} people.")
-    print(df.groupby(["person"])["label"].value_counts().unstack(fill_value=0)
-          .T.to_string())
+    print(df.groupby(["view", "person"])["label"].value_counts()
+          .unstack(fill_value=0).T.to_string())
 
-    if not quick:
-        cross_person_report(X, y, groups, labels)
+    if not args.quick:
+        cross_person_report(X, y, groups, labels, views,
+                            args.train_view, args.test_view, args.seeds)
 
-    # The shipped model trains on everything -- holding a person out is for
-    # measurement, not for the artifact that main.py loads.
-    print(f"\n{'='*66}\nTRAINING SHIPPED MODEL ON ALL {len(X)} ROWS\n{'='*66}")
+    # The shipped model trains on all rows of the training view -- holding a
+    # person out is for measurement, not for the artifact main.py loads.
+    rows = view_mask(views, args.train_view)
+    Xs, ys = X[rows], y[rows]
+    print(f"\n{'='*66}\nTRAINING SHIPPED MODEL ON {len(Xs)} ROWS "
+          f"(view: {args.train_view})\n{'='*66}")
     model = build_model()
-    model.fit(X, y)
+    model.fit(Xs, ys)
+    missing = sorted(set(labels) - {labels[i] for i in set(ys)})
+    if missing:
+        print(f"  this view has no rows for: {', '.join(missing)} -- the model "
+              f"can never output them")
 
     X_tr, X_val, y_tr, y_val = train_test_split(
-        X, y, test_size=0.15, stratify=y, random_state=42)
+        Xs, ys, test_size=0.15, stratify=ys, random_state=42)
     in_sample = (build_model().fit(X_tr, y_tr).predict(X_val) == y_val).mean()
     print(f"In-sample (random split) accuracy: {in_sample:.3f}  <- INFLATED, "
           f"do not quote:\n  frames within a recording are near-duplicates, so "
           f"this mostly measures memorisation.")
 
-    joblib.dump(model, MODEL_OUT)
-    with open(LABELS_OUT, "w") as f:
-        json.dump(labels, f)
-    print(f"\nSaved model to {MODEL_OUT} and label order to {LABELS_OUT}")
+    # The label order travels inside the model file, so a second model (say,
+    # first-person) can never be paired with the wrong landmark_labels.json.
+    # The JSON is still written for the default model, for older checkouts.
+    model.label_names_ = list(labels)
+    model.trained_view_ = args.train_view
+    joblib.dump(model, args.out)
+    print(f"\nSaved model to {args.out}")
+    if args.out == MODEL_OUT:
+        with open(LABELS_OUT, "w") as f:
+            json.dump(labels, f)
+        print(f"and label order to {LABELS_OUT}")
 
 
 if __name__ == "__main__":

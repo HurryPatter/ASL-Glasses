@@ -1,4 +1,4 @@
-"""Summarise eval_results.csv by hardware profile.
+"""Summarise eval_results.csv by device, camera view and hardware profile.
 
 Answers the two questions the embedded-target decision turns on:
   does accuracy survive a lower capture resolution, and how slow can the
@@ -33,8 +33,11 @@ def main():
     by = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0]))
     fps = collections.defaultdict(list)
     for r in rows:
-        # Same profile on different machines is a different measurement.
-        prof = f'{r.get("device") or "laptop"} {r["profile"] or "native@uncapped"}'
+        # Same profile on different machines, or with the camera somewhere
+        # else, is a different measurement.
+        view = "" if (r.get("view") or "front") == "front" else " first-person"
+        prof = (f'{r.get("device") or "laptop"}{view} '
+                f'{r["profile"] or "native@uncapped"}')
         ok = r["correct"] == "True"
         kind = "motion" if r["expected"] in MOTION else "static"
         by[prof]["all"][0] += ok;    by[prof]["all"][1] += 1
@@ -45,13 +48,13 @@ def main():
 
     floor = hwprofile.motion_floor_fps()
     print(f"eval_results.csv by hardware profile   (J/Z floor: {floor:.1f}fps)\n")
-    print(f"  {'device / profile':26} {'overall':>9} {'static':>9} {'J/Z':>9} {'fps':>7}")
+    print(f"  {'device / view / profile':36} {'overall':>9} {'static':>9} {'J/Z':>9} {'fps':>7}")
     for prof in sorted(by):
         a, s, m = by[prof]["all"], by[prof]["static"], by[prof]["motion"]
         f = f"{sum(fps[prof])/len(fps[prof]):.1f}" if fps.get(prof) else "-"
         def pct(c):
             return f"{c[0]}/{c[1]}" if c[1] else "-"
-        print(f"  {prof:26} {pct(a):>9} {pct(s):>9} {pct(m):>9} {f:>7}")
+        print(f"  {prof:36} {pct(a):>9} {pct(s):>9} {pct(m):>9} {f:>7}")
 
     print("\n  overall/static/J-Z are correct/total. A profile whose J/Z column")
     print("  collapses while static holds up is hitting the motion floor, not a")

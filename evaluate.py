@@ -18,14 +18,12 @@ Controls:
   Q     = quit and print the summary so far
 """
 import csv
-import json
 import os
 import time
 from collections import Counter
 
 import cv2
 import numpy as np
-import joblib
 import mediapipe as mp
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
@@ -33,7 +31,8 @@ from mediapipe.tasks.python import vision as mp_vision
 import argparse
 
 import camera
-from features import normalize_landmarks
+import dataset
+from features import load_classifier, normalize_landmarks
 import hwprofile
 from debouncer import Debouncer
 from motion import MotionDetector
@@ -118,6 +117,12 @@ def parse_args():
                    help="repeat the letter set this many times, cycling rather "
                         "than blocking (J Z J Z ... not J J ... Z Z), so fatigue "
                         "and habituation do not load onto one sign.")
+    p.add_argument("--model", default=MODEL_PATH,
+                   help=f"classifier to evaluate (default {MODEL_PATH}); e.g. a "
+                        f"first-person model from train_classifier.py --out")
+    p.add_argument("--view", choices=dataset.VIEWS,
+                   help="where the camera is: front (facing the signer) or "
+                        "firstperson (on the signer's head). Asked if not given.")
     p.add_argument("--fps", type=float, default=None,
                    help="process at most this many frames per second; extra "
                         "frames are dropped unprocessed, emulating a board "
@@ -142,10 +147,13 @@ def main():
     # "this person struggles" from "this lighting is hard".
     person = ask("Who is signing? (first name, e.g. omar): ", "unknown")
     condition = ask("Condition? (e.g. 'outdoor_sun', 'indoor_white_bg'): ", "unlabeled")
+    view = args.view
+    while not view:
+        view = dataset.parse_view(input(
+            "Camera view? [f]ront (camera faces the signer) or "
+            "[g]lasses (camera on the signer's head): "))
 
-    model = joblib.load(MODEL_PATH)
-    with open(LABELS_PATH) as f:
-        LETTERS = json.load(f)
+    model, LETTERS = load_classifier(args.model, LABELS_PATH)
 
     base_options = mp_python.BaseOptions(model_asset_path=LANDMARKER_PATH)
     landmarker = mp_vision.HandLandmarker.create_from_options(
@@ -191,7 +199,7 @@ def main():
     consecutive_missed = 0
     baseline_len = 0  # confirmed_string length when the capture window started
 
-    print(f"\nRunning eval for condition: {condition} / {device} / {profile}")
+    print(f"\nRunning eval for condition: {condition} / {view} / {device} / {profile}")
     print(f"{len(sequence)} captures: {' '.join(sequence[:12])}"
           f"{' ...' if len(sequence) > 12 else ''}")
     print("SPACE = start capture | X = void the last one | N = skip | Q = quit")
@@ -255,7 +263,7 @@ def main():
                 committed = debouncer.confirmed_string[baseline_len:]
                 correct = target in committed
                 results.append((target, committed, correct))
-                writer.writerow([person, condition, device, profile,
+                writer.writerow([person, condition, view, device, profile,
                                  actual_w, actual_h, args.fps or "",
                                  f"{limiter.achieved_fps():.1f}",
                                  target, committed, correct])
@@ -281,7 +289,7 @@ def main():
             break
         elif key == ord('n') and not capturing:
             results.append((target, "", False))
-            writer.writerow([person, condition, device, profile,
+            writer.writerow([person, condition, view, device, profile,
                              actual_w, actual_h, args.fps or "",
                              f"{limiter.achieved_fps():.1f}",
                              target, "", False])
@@ -313,7 +321,7 @@ def main():
     # ── This run's summary ───────────────────────────────────────────────
     if results:
         n_correct = sum(1 for _, _, ok in results if ok)
-        print(f"\n{person} / {condition} / {device} / {profile}: "
+        print(f"\n{person} / {condition} / {view} / {device} / {profile}: "
               f"{n_correct}/{len(results)} correct ({n_correct/len(results):.1%})")
         print(f"  camera delivered {limiter.capture_fps():.1f}fps, "
               f"pipeline processed {limiter.achieved_fps():.1f}fps "

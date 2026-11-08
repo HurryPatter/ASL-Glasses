@@ -148,18 +148,22 @@ def device_label(model_path="/proc/device-tree/model", env=None):
 # eval_results.csv layout. Columns were added over time; older files are
 # migrated in place, each missing column filled with what is actually known
 # about rows that predate it.
-RESULTS_HEADER = ["person", "condition", "device", "profile", "width", "height",
-                  "fps_cap", "fps_actual", "expected", "committed", "correct"]
+RESULTS_HEADER = ["person", "condition", "view", "device", "profile", "width",
+                  "height", "fps_cap", "fps_actual", "expected", "committed",
+                  "correct"]
 LEGACY_HEADERS = [
     ["condition", "expected", "committed", "correct"],
     ["person", "condition", "expected", "committed", "correct"],
     ["person", "condition", "profile", "width", "height",
      "fps_cap", "fps_actual", "expected", "committed", "correct"],
+    ["person", "condition", "device", "profile", "width", "height",
+     "fps_cap", "fps_actual", "expected", "committed", "correct"],
 ]
 # Every run before a column existed was on the laptop, by an unrecorded
-# signer, at the camera's own resolution and frame rate.
+# signer, at the camera's own resolution and frame rate, with the camera
+# facing the signer (no first-person run predates the view column).
 LEGACY_FILL = {"person": "unknown", "device": "laptop",
-               "profile": "native@uncapped"}
+               "profile": "native@uncapped", "view": "front"}
 
 
 def migrate_rows(rows):

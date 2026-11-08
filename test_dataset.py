@@ -16,14 +16,16 @@ class TestSchema(unittest.TestCase):
 
     def test_header_shape(self):
         self.assertEqual(len(dataset.LANDMARK_COLUMNS), 42)
-        self.assertEqual(dataset.HEADER[:2], ["label", "person"])
-        self.assertEqual(len(dataset.HEADER), 44)
+        self.assertEqual(dataset.HEADER[:3], ["label", "person", "view"])
+        self.assertEqual(len(dataset.HEADER), 45)
+        self.assertEqual(len(dataset.PRE_VIEW_HEADER), 44)
         self.assertEqual(len(dataset.LEGACY_HEADER), 43)
 
     def test_person_is_not_a_feature_column(self):
         # The training script selects features by this list, so `person`
         # leaking into it would silently become a 43rd input feature.
         self.assertNotIn("person", dataset.LANDMARK_COLUMNS)
+        self.assertNotIn("view", dataset.LANDMARK_COLUMNS)
         self.assertNotIn("label", dataset.LANDMARK_COLUMNS)
 
     def test_has_person_column(self):
@@ -36,7 +38,7 @@ class TestSchema(unittest.TestCase):
             with open(path, "w", newline="") as fh:
                 w = csv.writer(fh)
                 w.writerow(dataset.HEADER)
-                w.writerow(["A", "omar"] + ["0.0"] * 42)
+                w.writerow(["A", "omar", "front"] + ["0.0"] * 42)
             self.assertEqual(dataset.read_header(path), dataset.HEADER)
 
 
@@ -116,8 +118,49 @@ class TestSessionInference(unittest.TestCase):
             if r[1] == dataset.UNKNOWN_PERSON:
                 self.assertGreater(len(r[0]), 1,
                                    f"letter {r[0]!r} should have a known signer")
-        # Every row has a person and the full 42 features.
-        self.assertTrue(all(len(r) == 44 and r[1] for r in body))
+        # Every row has a person, a view and the full 42 features.
+        self.assertTrue(all(len(r) == 45 and r[1] for r in body))
+        self.assertTrue(all(r[2] in dataset.VIEWS for r in body))
+
+
+
+class TestView(unittest.TestCase):
+
+    def write(self, d, header, rows):
+        path = os.path.join(d, "data.csv")
+        with open(path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerows(rows)
+        return path
+
+    def test_pre_view_file_gains_the_column_as_front(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write(d, dataset.PRE_VIEW_HEADER,
+                              [["A", "omar"] + ["0.5"] * 42,
+                               ["B", "laila"] + ["0.25"] * 42])
+            self.assertEqual(dataset.add_view_column(path), 2)
+            with open(path, newline="") as fh:
+                rows = list(csv.reader(fh))
+            self.assertEqual(rows[0], dataset.HEADER)
+            self.assertEqual(rows[1][:3], ["A", "omar", "front"])
+            self.assertEqual(rows[2][3:], ["0.25"] * 42)   # features untouched
+            self.assertEqual(dataset.add_view_column(path), 0)   # idempotent
+
+    def test_unexpected_header_is_refused_and_left_alone(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self.write(d, ["label"] + dataset.LANDMARK_COLUMNS,
+                              [["A"] + ["0.5"] * 42])
+            with self.assertRaises(ValueError):
+                dataset.add_view_column(path)
+            self.assertEqual(dataset.read_header(path)[0:2], ["label", "p0_x"])
+
+    def test_parse_view(self):
+        self.assertEqual(dataset.parse_view("f"), "front")
+        self.assertEqual(dataset.parse_view(" G "), "firstperson")
+        self.assertEqual(dataset.parse_view("glasses"), "firstperson")
+        self.assertIsNone(dataset.parse_view("x"))
+        self.assertIsNone(dataset.parse_view(""))
 
 
 if __name__ == "__main__":

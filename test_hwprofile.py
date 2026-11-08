@@ -122,6 +122,8 @@ class TestMigrateRows(unittest.TestCase):
             1: ["omar", "green", "A", "A", "True"],
             2: ["omar", "green", "320x240@10fps", "320", "240", "10", "9.9",
                 "A", "A", "True"],
+            3: ["omar", "green", "laptop", "320x240@10fps", "320", "240", "10",
+                "9.9", "A", "A", "True"],
         }
         for i, header in enumerate(hwprofile.LEGACY_HEADERS):
             out = hwprofile.migrate_rows([header, rows[i]])
@@ -132,13 +134,23 @@ class TestMigrateRows(unittest.TestCase):
             self.assertEqual([got["expected"], got["committed"], got["correct"]],
                              self.TAIL)
             self.assertEqual(got["person"], "unknown" if i == 0 else "omar")
+            self.assertEqual(got["view"], "front")
         # Profile columns that were recorded survive; missing ones are filled.
         self.assertEqual(dict(zip(hwprofile.RESULTS_HEADER,
                                   hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[2],
                                                           rows[2]])[1]))["fps_actual"],
                          "9.9")
-        self.assertEqual(hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[0],
-                                                 rows[0]])[1][3], "native@uncapped")
+        migrated = hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[0], rows[0]])
+        self.assertEqual(dict(zip(migrated[0], migrated[1]))["profile"],
+                         "native@uncapped")
+
+    def test_a_recorded_device_survives_migration(self):
+        # The pi5 rows were written before the view column: they must stay pi5.
+        out = hwprofile.migrate_rows([hwprofile.LEGACY_HEADERS[3],
+                                      ["omar", "x", "pi5", "640x480@uncapped", "640",
+                                       "480", "", "25.0", "Z", "X", "False"]])
+        got = dict(zip(out[0], out[1]))
+        self.assertEqual((got["device"], got["view"]), ("pi5", "front"))
 
     def test_unknown_header_is_refused(self):
         with self.assertRaises(ValueError):

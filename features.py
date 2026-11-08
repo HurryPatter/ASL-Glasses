@@ -38,3 +38,21 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
         local[:, 0] *= -1
 
     return local.flatten()
+
+
+def load_classifier(model_path="landmark_model.joblib",
+                    labels_path="landmark_labels.json"):
+    """(model, labels): the classifier and its output index -> label order.
+
+    Models trained since the view column carry their label order inside
+    (label_names_), so a first-person model cannot be paired with the wrong
+    labels file; older ones fall back to landmark_labels.json.
+    """
+    import json
+    import joblib
+    model = joblib.load(model_path)
+    labels = getattr(model, "label_names_", None)
+    if labels is None:
+        with open(labels_path) as fh:
+            labels = json.load(fh)
+    return model, list(labels)
