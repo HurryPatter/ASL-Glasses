@@ -41,6 +41,7 @@ CONFIDENCE_THRESHOLD = 0.85
 MISSED_FRAME_TOLERANCE = 5   # consecutive dropped-tracking frames tolerated before giving up
 DISPLAY_SMOOTHING_N = 6      # how many recent guesses the on-screen readout is smoothed over
 BUTTON_HOLD_S = 1.0          # a press at least this long discards instead of speaking
+CAMERA_GRACE_S = 2.0         # failed reads tolerated this long before giving up
 
 
 def parse_args(argv=None):
@@ -260,6 +261,8 @@ def run(args):
     frame_no = 0
     show_debug = False
     last_printed = None
+    failing_since = None         # when camera reads started failing, if they are
+    camera_lost = False
 
     def speak(text):
         audio.speak(text)
@@ -279,7 +282,20 @@ def run(args):
         while not stopping["now"]:
             ok, frame = cap.read()
             if not ok:
-                break
+                # A single bad read (a USB hiccup, a Picamera2 timeout) is
+                # retried; a camera that stays gone ends the run as a FAILURE,
+                # so the service restarts it. It used to `break` here and exit
+                # 0, which systemd's Restart=on-failure reads as a deliberate
+                # stop: one loose connector and the glasses went quiet until
+                # someone rebooted them.
+                now = time.monotonic()
+                failing_since = failing_since or now
+                if now - failing_since >= CAMERA_GRACE_S:
+                    camera_lost = True
+                    break
+                time.sleep(0.05)
+                continue
+            failing_since = None
             frame = cv2.flip(frame, 1)
             frame_no += 1
             # Real elapsed time, not an assumed frame duration: this is what
@@ -332,6 +348,10 @@ def run(args):
         cap.release()
         if not args.headless:
             cv2.destroyAllWindows()
+    if camera_lost:
+        raise SystemExit(f"Camera stopped delivering frames for {CAMERA_GRACE_S:g}s; "
+                         f"exiting with an error so the service restarts it. "
+                         f"Check the connection with: python camera.py")
     return frame_no
 
 
