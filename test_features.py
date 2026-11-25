@@ -9,6 +9,7 @@ import ast
 import math
 import os
 import random
+import tempfile
 import unittest
 
 try:
@@ -107,6 +108,110 @@ class TestOneDefinition(unittest.TestCase):
             imported = {(n.module, a.name) for n in ast.walk(tree)
                         if isinstance(n, ast.ImportFrom) for a in n.names}
             self.assertIn(("features", "normalize_landmarks"), imported, name)
+
+
+
+LABELS = ["A", "B", "C", "D", "E", "F", "G", "H", "HELLO", "I", "IHATEYOU",
+          "ILY", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V",
+          "W", "X", "Y"]
+
+
+class TestOutputNames(unittest.TestCase):
+    """Each model output must be named after the class it really is."""
+
+    def test_every_label_trained(self):
+        from features import output_names
+        self.assertEqual(output_names(range(27), LABELS), LABELS)
+
+    def test_model_missing_some_labels(self):
+        # First-person data without the word signs: 24 outputs, 27 labels.
+        # Pairing them by position read I as HELLO and L as IHATEYOU.
+        from features import output_names
+        classes = [i for i, l in enumerate(LABELS) if len(l) == 1]
+        names = output_names(classes, LABELS)
+        self.assertEqual(len(names), 24)
+        self.assertEqual(names, [l for l in LABELS if len(l) == 1])
+        self.assertEqual(names[8], "I")
+        self.assertNotIn("HELLO", names)
+
+    def test_names_already_one_per_output(self):
+        from features import output_names
+        classes = [i for i, l in enumerate(LABELS) if len(l) == 1]
+        per_output = [LABELS[c] for c in classes]
+        self.assertEqual(output_names(classes, per_output), per_output)
+
+    def test_mismatch_is_refused(self):
+        from features import output_names
+        with self.assertRaises(ValueError):
+            output_names(range(27), LABELS[:20])
+
+
+try:
+    import sklearn  # noqa: F401
+    import joblib  # noqa: F401
+    HAVE_SKLEARN = True
+except ImportError:
+    HAVE_SKLEARN = False
+
+
+@unittest.skipUnless(HAVE_SKLEARN and HAVE_NUMPY, "scikit-learn not installed")
+class TestTrainedModelRoundTrip(unittest.TestCase):
+    """Train on a subset of labels, save as train_classifier.py does, load as
+    main.py does, and check the words that come out."""
+
+    @staticmethod
+    def sample(rng, c, n):
+        """Easily separable stand-in features: class c lives along axis c."""
+        import numpy as np
+        X = rng.normal(0, 0.05, (n, 42))
+        X[:, c] += 3.0
+        return X
+
+    def test_subset_model_says_the_right_words(self):
+        import numpy as np
+        from sklearn.neural_network import MLPClassifier
+        from features import load_classifier, output_names
+        rng = np.random.RandomState(0)
+        present = [0, 1, 9, 13]                       # A, B, I, L: no word signs
+        X = np.vstack([self.sample(rng, c, 40) for c in present])
+        y = np.repeat(present, 40)
+        model = MLPClassifier((16,), max_iter=500, random_state=0).fit(X, y)
+        model.label_names_ = output_names(model.classes_, LABELS)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m.joblib")
+            import joblib
+            joblib.dump(model, path)
+            loaded, labels = load_classifier(path, labels_path="nonexistent.json")
+        for c, name in zip(present, ["A", "B", "I", "L"]):
+            probs = loaded.predict_proba(self.sample(rng, c, 1))[0]
+            self.assertEqual(labels[int(np.argmax(probs))], name)
+
+    def test_older_model_with_full_label_list_still_works(self):
+        # A model saved before the fix carries all 27 names; the mapping has
+        # to recover the right ones from classes_.
+        import numpy as np
+        from sklearn.neural_network import MLPClassifier
+        from features import load_classifier
+        rng = np.random.RandomState(1)
+        present = [0, 9, 26]                          # A, I, Y
+        X = np.vstack([self.sample(rng, c, 40) for c in present])
+        model = MLPClassifier((16,), max_iter=500, random_state=0).fit(
+            X, np.repeat(present, 40))
+        model.label_names_ = list(LABELS)             # the old, buggy save
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "m.joblib")
+            import joblib
+            joblib.dump(model, path)
+            loaded, labels = load_classifier(path)
+        self.assertEqual(labels, ["A", "I", "Y"])
+
+    def test_shipped_model_loads_with_its_labels(self):
+        from features import load_classifier
+        here = os.path.dirname(os.path.abspath(__file__))
+        model, labels = load_classifier(os.path.join(here, "landmark_model.joblib"),
+                                        os.path.join(here, "landmark_labels.json"))
+        self.assertEqual(len(labels), len(model.classes_))
+        self.assertEqual(labels, LABELS)
 
 
 if __name__ == "__main__":

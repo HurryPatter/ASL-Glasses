@@ -56,6 +56,7 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.metrics import classification_report, confusion_matrix
 
 import dataset
+from features import output_names
 
 DATA_PATH = "landmark_data.csv"
 MODEL_OUT = "landmark_model.joblib"
@@ -250,16 +251,19 @@ def main():
           f"do not quote:\n  frames within a recording are near-duplicates, so "
           f"this mostly measures memorisation.")
 
-    # The label order travels inside the model file, so a second model (say,
+    # The label names travel inside the model file, so a second model (say,
     # first-person) can never be paired with the wrong landmark_labels.json.
-    # The JSON is still written for the default model, for older checkouts.
-    model.label_names_ = list(labels)
+    # One name per OUTPUT, in the model's own order: a view that lacks some
+    # labels gives a model with fewer outputs than there are labels, and the
+    # full list would shift every name after the gap. The JSON is still
+    # written for the default model, for older checkouts.
+    model.label_names_ = output_names(model.classes_, labels)
     model.trained_view_ = args.train_view
     joblib.dump(model, args.out)
     print(f"\nSaved model to {args.out}")
     if args.out == MODEL_OUT:
         with open(LABELS_OUT, "w") as f:
-            json.dump(labels, f)
+            json.dump(model.label_names_, f)
         print(f"and label order to {LABELS_OUT}")
 
 

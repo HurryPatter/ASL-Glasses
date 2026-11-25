@@ -40,13 +40,43 @@ def normalize_landmarks(landmarks, frame_w, frame_h):
     return local.flatten()
 
 
+def output_names(classes, label_names):
+    """The label for each column of predict_proba, in column order.
+
+    A scikit-learn classifier only has columns for the classes it saw in
+    training (model.classes_), and main.py / evaluate.py pick the name by
+    column position. So the names must line up with classes_, not with the
+    full label list: a model trained on a view that lacks some labels (say,
+    first-person data without the word signs) has fewer columns than there
+    are labels, and pairing it with the full list shifted every name after
+    the first gap -- I read as HELLO, L as IHATEYOU.
+
+    classes are the integer indices train_classifier.py trains on, so each
+    one picks its own name out of label_names. Also accepts label_names that
+    are already one per column (as saved since this fix).
+    """
+    classes = [int(c) for c in classes]
+    names = list(label_names)
+    if len(names) == len(classes) and classes == list(range(len(classes))):
+        return names                       # every label trained: same thing
+    if len(names) == len(classes) and len(names) != max(classes) + 1:
+        return names                       # already one name per column
+    if classes and max(classes) < len(names):
+        return [names[c] for c in classes]
+    raise ValueError(f"model has {len(classes)} outputs (classes {classes}) "
+                     f"but {len(names)} label names: they do not belong together")
+
+
 def load_classifier(model_path="landmark_model.joblib",
                     labels_path="landmark_labels.json"):
-    """(model, labels): the classifier and its output index -> label order.
+    """(model, labels): the classifier and the label for each of its outputs.
 
-    Models trained since the view column carry their label order inside
+    Models trained since the view column carry their label names inside
     (label_names_), so a first-person model cannot be paired with the wrong
-    labels file; older ones fall back to landmark_labels.json.
+    labels file; older ones fall back to landmark_labels.json. Either way the
+    names are aligned to the model's outputs (see output_names), and a model
+    and a labels file that cannot belong together are refused rather than
+    allowed to speak the wrong words.
     """
     import json
     import joblib
@@ -55,4 +85,4 @@ def load_classifier(model_path="landmark_model.joblib",
     if labels is None:
         with open(labels_path) as fh:
             labels = json.load(fh)
-    return model, list(labels)
+    return model, output_names(model.classes_, labels)
